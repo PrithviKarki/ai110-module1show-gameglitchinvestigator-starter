@@ -10,10 +10,15 @@ def get_range_for_difficulty(difficulty: str):
         return 1, 50
     return 1, 100
 
-
-def parse_guess(raw: str):
+# FIX (Bug 2): I pointed Claude Code at app.py in agent mode saying there was
+# no range validation at all; it found that get_range_for_difficulty already
+# computed low/high but they never reached this function, and added the bounds
+# check below. I reviewed the fix and asked for pytest cases covering it.
+def parse_guess(raw: str, low: int, high: int):
     if raw is None:
         return False, None, "Enter a guess."
+
+    raw = raw.strip()
 
     if raw == "":
         return False, None, "Enter a guess."
@@ -26,25 +31,35 @@ def parse_guess(raw: str):
     except Exception:
         return False, None, "That is not a number."
 
+    # FIX: added — previously any int was accepted, so -500 and 9999 were
+    # treated as valid guesses, burned an attempt, and got scored.
+    if value < low or value > high:
+        return False, None, f"Out of range. Guess a number between {low} and {high}."
+
     return True, value, None
 
 
+# FIX (Bug 1): I asked Claude Code in agent mode to analyze app.py for the
+# swapped direction hints; it traced the swap to all four return statements
+# below (both the int path and the TypeError fallback) and I reviewed the fix.
 def check_guess(guess, secret):
     if guess == secret:
         return "Win", "🎉 Correct!"
 
     try:
         if guess > secret:
-            return "Too High", "📈 Go HIGHER!"
+            return "Too High", "📉 Go LOWER!"   # FIX: was "Go HIGHER!"
         else:
-            return "Too Low", "📉 Go LOWER!"
+            return "Too Low", "📈 Go HIGHER!"   # FIX: was "Go LOWER!"
     except TypeError:
         g = str(guess)
         if g == secret:
             return "Win", "🎉 Correct!"
+        # FIX: same swap lived in this fallback branch, which app.py reaches on
+        # even-numbered attempts; the AI caught it after I pointed out the first one.
         if g > secret:
-            return "Too High", "📈 Go HIGHER!"
-        return "Too Low", "📉 Go LOWER!"
+            return "Too High", "📉 Go LOWER!"   # FIX: was "Go HIGHER!"
+        return "Too Low", "📈 Go HIGHER!"       # FIX: was "Go LOWER!"
 
 
 def update_score(current_score: int, outcome: str, attempt_number: int):
@@ -107,7 +122,9 @@ if "history" not in st.session_state:
 st.subheader("Make a guess")
 
 st.info(
-    f"Guess a number between 1 and 100. "
+    # FIX: was hardcoded "between 1 and 100", which contradicted the new
+    # validator on Easy (1-20) and Hard (1-50).
+    f"Guess a number between {low} and {high}. "
     f"Attempts left: {attempt_limit - st.session_state.attempts}"
 )
 
@@ -147,7 +164,9 @@ if st.session_state.status != "playing":
 if submit:
     st.session_state.attempts += 1
 
-    ok, guess_int, err = parse_guess(raw_guess)
+    # FIX: pass the difficulty's real bounds in; this call used to be
+    # parse_guess(raw_guess) with no range to validate against.
+    ok, guess_int, err = parse_guess(raw_guess, low, high)
 
     if not ok:
         st.session_state.history.append(raw_guess)
