@@ -1,4 +1,5 @@
 import random
+import re
 import streamlit as st
 
 def get_range_for_difficulty(difficulty: str):
@@ -14,24 +15,42 @@ def get_range_for_difficulty(difficulty: str):
 # no range validation at all; it found that get_range_for_difficulty already
 # computed low/high but they never reached this function, and added the bounds
 # check below. I reviewed the fix and asked for pytest cases covering it.
+#
+# EDGE CASES: the original `int(raw)` / `int(float(raw))` path was far more
+# permissive than it looks. Python accepts underscore separators ("1_0" -> 10)
+# and non-ASCII digits (Arabic-Indic "٥٠" -> 50), and the float branch silently
+# truncated "50.9" to 50 - scoring the player on a number they never typed.
+# This strict ASCII pattern is what closes all three.
+_NUMERIC_PATTERN = re.compile(r"[+-]?\d+(\.\d+)?", re.ASCII)
+
+
 def parse_guess(raw: str, low: int, high: int):
     if raw is None:
         return False, None, "Enter a guess."
+
+    if not isinstance(raw, str):
+        raw = str(raw)
 
     raw = raw.strip()
 
     if raw == "":
         return False, None, "Enter a guess."
 
-    try:
-        if "." in raw:
-            value = int(float(raw))
-        else:
-            value = int(raw)
-    except Exception:
+    # FIX: added - replaces a bare try/except int() that accepted "1_0",
+    # full-width "１２" and other shapes no player ever means to type.
+    if not _NUMERIC_PATTERN.fullmatch(raw):
         return False, None, "That is not a number."
 
-    # FIX: added — previously any int was accepted, so -500 and 9999 were
+    if "." in raw:
+        as_float = float(raw)
+        # FIX: added - "50.9" used to truncate to 50 and get scored silently.
+        if as_float != int(as_float):
+            return False, None, "Whole numbers only. Drop the decimal."
+        value = int(as_float)
+    else:
+        value = int(raw)
+
+    # FIX: added - previously any int was accepted, so -500 and 9999 were
     # treated as valid guesses, burned an attempt, and got scored.
     if value < low or value > high:
         return False, None, f"Out of range. Guess a number between {low} and {high}."

@@ -42,7 +42,7 @@ Everything the AI suggested on this project turned out to be correct, and both f
 
 - How did you decide whether a bug was really fixed?
 
-I decided a bug was fixed only when it failed a test before the change and passed after, and when I could also watch the corrected behavior in the running Streamlit app. Before I fixed anything I had to repair the test file itself: `tests/test_game_logic.py` imported `check_guess` from `logic_utils`, which is still all `raise NotImplementedError` stubs, and the three starter tests compared a `(outcome, message)` tuple to a plain string. So those tests could never have caught anything. I pointed the import at `app.py`, where the real implementations live, and unpacked the tuple. That was the first real lesson: a green-looking test file is not the same as a test file that is actually checking your code. I ended up with 129 passing tests across the two bugs.
+I decided a bug was fixed only when it failed a test before the change and passed after, and when I could also watch the corrected behavior in the running Streamlit app. Before I fixed anything I had to repair the test file itself: `tests/test_game_logic.py` imported `check_guess` from `logic_utils`, which is still all `raise NotImplementedError` stubs, and the three starter tests compared a `(outcome, message)` tuple to a plain string. So those tests could never have caught anything. I pointed the import at `app.py`, where the real implementations live, and unpacked the tuple. That was the first real lesson: a green-looking test file is not the same as a test file that is actually checking your code. I ended up with 200 passing tests: 129 covering the two bugs I found by playing, and a further round aimed at hostile input to `parse_guess`, which turned up three more defects in my own range fix (`"1_0"` parsed as 10, `"٥٠"` parsed as 50, and `"50.9"` was silently truncated to 50).
 
 - Describe at least one test you ran (manual or using pytest) and what it showed you about your code.
 
@@ -60,14 +60,18 @@ Yes. I asked Claude Code in agent mode to draft tests aimed specifically at the 
 
 - How would you explain Streamlit "reruns" and session state to a friend who has never used Streamlit?
 
+Streamlit reruns are the app refreshing itself after an interaction, and session state is the place where you save the important information you want to keep between those refreshes. Without session state, a Streamlit app would feel broken because it would reset to square one on every click.
 ---
 
 ## 5. Looking ahead: your developer habits
 
 - What is one habit or strategy from this project that you want to reuse in future labs or projects?
   - This could be a testing habit, a prompting strategy, or a way you used Git.
+  Thinking the solution through, provide expected inputs and outputs to minimize hallucination, and also descibe the logic in plain english. I also like using what i call the "OC method" where i first list the outcome and then explain the context in a separate block.
 - What is one thing you would do differently next time you work with AI on a coding task?
+  Spend more time designing the solution, viusalizing it using AI, and then proceed to coding.
 - In one or two sentences, describe how this project changed the way you think about AI generated code.
+  AI generated code can be hit or miss depending on the prompt and context engineering but one of the most efficient way to mitigate that is by working in small increments instead of asking the ai to build the whole project end to end in a single prompt. 
 
 
 ## Reflections 

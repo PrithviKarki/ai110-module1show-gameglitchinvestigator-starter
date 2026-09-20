@@ -174,3 +174,220 @@ def test_out_of_range_is_distinct_from_not_a_number():
     assert range_err is not None
     assert nan_err is not None
     assert range_err != nan_err
+
+
+# ============================================================================
+# Advanced edge-case testing
+# ============================================================================
+#
+# The tests above cover the two bugs I actually found by playing the game.
+# This section covers the inputs a player can type that the happy path never
+# thinks about. I asked Claude Code to brainstorm hostile inputs for
+# parse_guess, then kept the ones that were really different from each other
+# rather than ten spellings of "abc" (see ai_interactions.md for the prompts
+# and my reasoning on each case).
+#
+# Three of these found real defects in my own fix, which is why they are here:
+#   * "1_0" parsed as 10, because Python allows underscore digit separators.
+#   * "٥٠" parsed as 50, because int() accepts non-ASCII decimal digits.
+#   * "50.9" was silently truncated to 50 and scored as a guess of 50.
+
+
+# --- Edge case 1: non-numeric strings ---------------------------------------
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "abc",            # plain letters
+        "fifty",          # the number spelled out
+        "!!!",            # punctuation only
+        "🎮",             # emoji
+        "12abc",          # digits with a tail
+        "abc12",          # digits with a head
+        "1 2",            # internal whitespace
+        "0x32",           # hex literal for 50
+        "5e1",            # scientific notation for 50
+        "--5",            # doubled sign
+        "1,000",          # thousands separator
+        "1_0",            # Python underscore separator -> used to parse as 10
+        "٥٠",             # Arabic-Indic digits -> used to parse as 50
+        "１２",            # full-width digits -> used to parse as 12
+        "nan",            # float() understands these; a guessing game must not
+        "inf",
+        "-inf",
+    ],
+)
+def test_non_numeric_strings_are_rejected(raw):
+    # None of these are a whole number a player meant to type, so every one
+    # must come back ok=False with no value. The last five matter most: they
+    # are the inputs that Python's int()/float() quietly ACCEPT, so a naive
+    # try/except parser lets them through and scores them.
+    ok, guess, err = parse_guess(raw, 1, 100)
+    assert ok is False
+    assert guess is None
+    assert err == "That is not a number."
+
+
+# --- Edge case 2: negative numbers ------------------------------------------
+
+@pytest.mark.parametrize("raw", ["-1", "-5", "-50", "-100", "-9999"])
+def test_negative_numbers_are_rejected_as_out_of_range(raw):
+    # A negative is a perfectly valid int, so the type check can never catch
+    # it - only the bounds check can. It must be reported as out of range and
+    # not as "not a number", because the player typed a real number.
+    ok, guess, err = parse_guess(raw, 1, 100)
+    assert ok is False
+    assert guess is None
+    assert "Out of range" in err
+
+
+@pytest.mark.parametrize("raw", ["-0", "0", "+0"])
+def test_zero_in_all_its_spellings_is_below_the_range(raw):
+    # Zero is the off-by-one boundary: low is 1, so 0 is the first illegal
+    # value underneath it. "-0" and "+0" both parse to 0 and must be treated
+    # identically - no sign-handling shortcut may let one of them slip in.
+    ok, guess, _ = parse_guess(raw, 1, 100)
+    assert ok is False
+    assert guess is None
+
+
+def test_negative_range_would_still_work():
+    # The bounds check must compare against the low/high it is given, not
+    # against a hardcoded assumption that guesses are positive. If the game
+    # ever offered a -50..50 board, -10 is a legal guess on it.
+    ok, guess, err = parse_guess("-10", -50, 50)
+    assert ok is True
+    assert guess == -10
+    assert err is None
+
+
+# --- Edge case 3: empty and whitespace-only input ---------------------------
+
+@pytest.mark.parametrize(
+    "raw",
+    ["", " ", "   ", "\t", "\n", "  \t\n  "],
+)
+def test_empty_and_whitespace_only_input_asks_for_a_guess(raw):
+    # Streamlit's text_input hands back "" on every rerun before the player
+    # types anything, so this is the single most common input the function
+    # sees. It must say "Enter a guess." - not "That is not a number." -
+    # because scolding someone for typing nothing yet is wrong.
+    ok, guess, err = parse_guess(raw, 1, 100)
+    assert ok is False
+    assert guess is None
+    assert err == "Enter a guess."
+
+
+def test_none_input_is_handled_without_crashing():
+    # A missing session-state key gives None rather than "". Calling .strip()
+    # on None would raise AttributeError and take the whole app down, so the
+    # None check has to come before any string handling.
+    ok, guess, err = parse_guess(None, 1, 100)
+    assert ok is False
+    assert guess is None
+    assert err == "Enter a guess."
+
+
+@pytest.mark.parametrize("raw", [" 50", "50 ", "  50  ", "\t50\n"])
+def test_padding_whitespace_is_forgiven_around_a_real_guess(raw):
+    # The flip side of the rule above: whitespace AROUND a number is a typo,
+    # not an error. A trailing space from a paste must not cost an attempt.
+    ok, guess, err = parse_guess(raw, 1, 100)
+    assert ok is True
+    assert guess == 50
+    assert err is None
+
+
+# --- Edge case 4: decimals --------------------------------------------------
+
+@pytest.mark.parametrize("raw", ["50.9", "49.5", "1.1", "99.99"])
+def test_non_whole_decimals_are_rejected_instead_of_truncated(raw):
+    # This is the defect this section found. int(float("50.9")) is 50, so the
+    # old parser accepted the guess, hid the truncation, and scored the player
+    # on a number they did not type. Rejecting is the honest behavior.
+    ok, guess, err = parse_guess(raw, 1, 100)
+    assert ok is False
+    assert guess is None
+    assert "Whole numbers" in err
+
+
+@pytest.mark.parametrize("raw,expected", [("50.0", 50), ("1.00", 1), ("100.0", 100)])
+def test_decimals_that_are_whole_numbers_still_count(raw, expected):
+    # "50.0" IS fifty. Rejecting it would punish formatting, not the guess.
+    ok, guess, err = parse_guess(raw, 1, 100)
+    assert ok is True
+    assert guess == expected
+    assert err is None
+
+
+@pytest.mark.parametrize("raw", [".", ".5", "5.", "1.2.3"])
+def test_malformed_decimals_are_not_numbers(raw):
+    # A lone or trailing dot is a half-typed guess, not a value. float() would
+    # happily turn ".5" into 0.5 and "5." into 5.0, so this needs its own rule.
+    ok, guess, err = parse_guess(raw, 1, 100)
+    assert ok is False
+    assert guess is None
+    assert err == "That is not a number."
+
+
+# --- Edge case 5: size and boundary extremes --------------------------------
+
+def test_absurdly_large_number_is_rejected_not_crashed():
+    # Python ints are unbounded, so a 300-digit guess parses fine and only the
+    # range check stops it. This confirms the ordering never overflows or
+    # hangs on input a bored player can produce by holding down a key.
+    ok, guess, err = parse_guess("9" * 300, 1, 100)
+    assert ok is False
+    assert guess is None
+    assert "Out of range" in err
+
+
+@pytest.mark.parametrize(
+    "difficulty,low,high",
+    [("Easy", 1, 20), ("Normal", 1, 100), ("Hard", 1, 50)],
+)
+def test_bounds_are_inclusive_and_one_past_them_is_not(difficulty, low, high):
+    # Walk the four values that straddle each difficulty's edges. This is the
+    # off-by-one sweep: low-1 and high+1 out, low and high in, on every board.
+    assert get_range_for_difficulty(difficulty) == (low, high)
+
+    assert parse_guess(str(low - 1), low, high)[0] is False
+    assert parse_guess(str(low), low, high)[0] is True
+    assert parse_guess(str(high), low, high)[0] is True
+    assert parse_guess(str(high + 1), low, high)[0] is False
+
+
+def test_unknown_difficulty_falls_back_to_a_usable_range():
+    # A typo or a renamed option must not return None and blow up the caller.
+    assert get_range_for_difficulty("Nightmare") == (1, 100)
+    assert get_range_for_difficulty("") == (1, 100)
+
+
+# --- Edge case 6: parse_guess never raises ----------------------------------
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None, "", "   ", "abc", "🎮", "-1", "0", "101", "50.9", ".",
+        "1_0", "٥٠", "nan", "inf", "0x32", "9" * 300, "1,000", "--5",
+    ],
+)
+def test_parse_guess_always_returns_a_three_part_answer(raw):
+    # The contract app.py relies on: whatever goes in, a (ok, value, error)
+    # tuple comes out and nothing propagates an exception up into Streamlit.
+    # It also pins the invariant that ok and the error message can never both
+    # be true at once - a rejected guess always explains itself.
+    result = parse_guess(raw, 1, 100)
+
+    assert isinstance(result, tuple)
+    assert len(result) == 3
+
+    ok, guess, err = result
+    assert isinstance(ok, bool)
+
+    if ok:
+        assert isinstance(guess, int)
+        assert err is None
+    else:
+        assert guess is None
+        assert isinstance(err, str) and err != ""

@@ -33,21 +33,57 @@ It wrote the code, ran away, and now the game is unplayable.
 
 Describe your fixed game in numbered steps so a reader can follow along without watching a video:
 
-1. <!-- Describe this step -->
-2. <!-- Describe this step -->
-3. <!-- Describe this step -->
-4. <!-- Describe this step -->
-5. <!-- Add more steps as needed -->
+1. User enters a guess of 0
+2. Game returns "Out of range. Guess a number between 1 and 100.
+3. User enters a guess of 101
+4. Game returns "Out of range. Guess a number between 1 and 100.
+5. User enters a guess of 40 → "Go HIGHER!"
+6. User enters a guess of 70 → "Go LOWER!"
+7. User enters a guess of 68 → "Correct!"
+8. Game ends after the correct guess
 
 **Screenshot** *(optional)*: <!-- Insert a screenshot of your fixed, winning game here -->
 
 ## 🧪 Test Results
 
+Run with the project venv active:
+
 ```
-# Paste your pytest output here, e.g.:
-# pytest tests/
-# ========================= X passed in 0.XXs =========================
+$ source venv/bin/activate
+$ python -m pytest tests/
+============================= test session starts ==============================
+platform darwin -- Python 3.13.0, pytest-9.1.1, pluggy-1.6.0
+rootdir: /Users/prithvikarki/Documents/CS Projects/CP Game Glitch/ai110-module1show-gameglitchinvestigator-starter
+plugins: anyio-4.14.2
+collected 200 items
+
+tests/test_game_logic.py ............................................... [ 23%]
+........................................................................ [ 59%]
+........................................................................ [ 95%]
+.........                                                                [100%]
+
+============================= 200 passed in 0.40s ==============================
 ```
+
+### Advanced edge-case coverage
+
+The last section of `tests/test_game_logic.py` targets the inputs the happy
+path never thinks about. The six groups are:
+
+| Edge case | What it feeds `parse_guess` | Why it matters |
+|-----------|-----------------------------|----------------|
+| Non-numeric strings | `abc`, `🎮`, `0x32`, `5e1`, `1_0`, `٥٠`, `nan`, `inf` | Python's `int()`/`float()` silently **accept** the last five, so a naive `try/except` parser scores them |
+| Negative numbers | `-1`, `-500`, `-0`, `+0` | A negative is a valid `int`, so only the bounds check can reject it — and it must say "out of range", not "not a number" |
+| Empty / whitespace input | `""`, `" "`, `"\t"`, `None` | Streamlit hands back `""` on every rerun before the player types; `None` would crash `.strip()` |
+| Decimals | `50.9`, `50.0`, `.5`, `5.` | `int(float("50.9"))` is 50 — the player got scored on a number they never typed |
+| Size & boundary extremes | a 300-digit number, `low-1`/`low`/`high`/`high+1` on all three difficulties | Off-by-one sweep plus proof that unbounded ints don't crash the parser |
+| Never-raises contract | the whole hostile corpus | `parse_guess` always returns `(ok, value, error)` and never lets an exception reach Streamlit |
+
+Three of these found real defects in my own Bug 2 fix — `"1_0"` parsed as `10`,
+`"٥٠"` parsed as `50`, and `"50.9"` was truncated to `50`. To confirm the tests
+had teeth I re-ran them against the old permissive parser: **9 failed**, and all
+200 pass against the fixed one. Prompts and per-case reasoning are in
+`ai_interactions.md`.
 
 ## 🚀 Stretch Features
 
