@@ -4,7 +4,16 @@ import pytest
 # tests failed with NotImplementedError. The AI noticed this while adding the
 # Bug 1 tests and I had it point the import at app.py, where the real
 # implementations still live.
-from app import check_guess, parse_guess, get_range_for_difficulty
+from app import (
+    check_guess,
+    parse_guess,
+    get_range_for_difficulty,
+    record_guess,
+    format_history_line,
+    blank_high_score,
+    update_high_scores,
+    new_game_state,
+)
 
 def test_winning_guess():
     # If the secret is 50 and guess is 50, it should be a win
@@ -391,3 +400,280 @@ def test_parse_guess_always_returns_a_three_part_answer(raw):
     else:
         assert guess is None
         assert isinstance(err, str) and err != ""
+
+
+# ============================================================================
+# Feature: Scoreboard & Guess History
+# ============================================================================
+#
+# Built in Claude Code agent mode (see ai_interactions.md). The four helpers
+# below are pure on purpose - they take state in and hand new state back - so
+# the feature can be tested without launching Streamlit. Everything that
+# touches st.session_state is a one-line call to one of these.
+
+
+# --- record_guess -----------------------------------------------------------
+
+def test_record_guess_appends_a_structured_entry():
+    history = record_guess([], 1, 42, "Too Low", "📈 Go HIGHER!")
+
+    assert len(history) == 1
+    assert history[0] == {
+        "attempt": 1,
+        "guess": 42,
+        "outcome": "Too Low",
+        "message": "📈 Go HIGHER!",
+    }
+
+
+def test_record_guess_does_not_mutate_the_list_it_was_given():
+    # Streamlit re-runs the whole script on every click. If record_guess
+    # mutated in place, a stale reference from the previous run could append
+    # the same guess twice. Returning a new list makes that impossible.
+    original = [{"attempt": 1, "guess": 10, "outcome": "Too Low", "message": "x"}]
+    updated = record_guess(original, 2, 20, "Too High", "y")
+
+    assert len(original) == 1
+    assert len(updated) == 2
+    assert updated[0] is not original[0] or original[0]["guess"] == 10
+
+
+def test_record_guess_keeps_guesses_in_the_order_they_were_made():
+    history = []
+    for n, guess in enumerate([10, 20, 30], start=1):
+        history = record_guess(history, n, guess, "Too Low", "📈 Go HIGHER!")
+
+    assert [entry["guess"] for entry in history] == [10, 20, 30]
+    assert [entry["attempt"] for entry in history] == [1, 2, 3]
+
+
+def test_rejected_input_is_logged_with_no_attempt_number():
+    # A typo is worth showing in the history, but it must not claim a turn.
+    # attempt=None is what the sidebar renders as "·" instead of a number.
+    history = record_guess([], None, "abc", "Invalid", "That is not a number.")
+
+    assert history[0]["attempt"] is None
+    assert history[0]["guess"] == "abc"
+    assert history[0]["outcome"] == "Invalid"
+
+
+# --- format_history_line ----------------------------------------------------
+
+@pytest.mark.parametrize(
+    "outcome,icon",
+    [("Win", "🎯"), ("Too High", "📉"), ("Too Low", "📈"), ("Invalid", "🚫")],
+)
+def test_each_outcome_gets_its_own_icon(outcome, icon):
+    # The icons are how you read the history at a glance, so a missing or
+    # duplicated one would make the panel useless.
+    line = format_history_line(
+        {"attempt": 1, "guess": 50, "outcome": outcome, "message": "m"}
+    )
+    assert line.startswith(icon)
+
+
+def test_history_line_shows_the_attempt_number_and_the_guess():
+    line = format_history_line(
+        {"attempt": 3, "guess": 42, "outcome": "Too High", "message": "m"}
+    )
+    assert "#3" in line
+    assert "42" in line
+    assert "Too High" in line
+
+
+def test_history_line_marks_a_free_attempt_with_a_dot():
+    line = format_history_line(
+        {"attempt": None, "guess": "abc", "outcome": "Invalid", "message": "m"}
+    )
+    assert "#·" in line
+    assert "None" not in line  # never leak the Python value into the UI
+
+
+def test_history_line_survives_an_unknown_outcome():
+    # A future outcome type must render a fallback icon, not raise KeyError
+    # and take the sidebar down with it.
+    line = format_history_line(
+        {"attempt": 1, "guess": 5, "outcome": "Bamboozled", "message": "m"}
+    )
+    assert line.startswith("❔")
+
+
+# --- update_high_scores -----------------------------------------------------
+
+def test_first_win_creates_the_row_for_that_difficulty():
+    table = update_high_scores({}, "Normal", score=70, attempts=3, won=True)
+
+    assert table["Normal"] == {
+        "best_score": 70,
+        "fewest_attempts": 3,
+        "wins": 1,
+        "losses": 0,
+    }
+
+
+def test_a_better_score_replaces_the_old_best():
+    table = update_high_scores({}, "Normal", score=70, attempts=3, won=True)
+    table = update_high_scores(table, "Normal", score=90, attempts=2, won=True)
+
+    assert table["Normal"]["best_score"] == 90
+    assert table["Normal"]["fewest_attempts"] == 2
+    assert table["Normal"]["wins"] == 2
+
+
+def test_a_worse_score_does_not_replace_the_old_best():
+    # "Best" moves one way only. This is the test that caught my first draft,
+    # where I copy-pasted the comparison and wrote `<` for both fields.
+    table = update_high_scores({}, "Normal", score=90, attempts=2, won=True)
+    table = update_high_scores(table, "Normal", score=40, attempts=7, won=True)
+
+    assert table["Normal"]["best_score"] == 90
+    assert table["Normal"]["fewest_attempts"] == 2
+
+
+def test_best_score_and_fewest_attempts_move_in_opposite_directions():
+    # A win worth more points that took MORE guesses should update the score
+    # and leave the attempt record alone. These two fields are independent.
+    table = update_high_scores({}, "Hard", score=50, attempts=2, won=True)
+    table = update_high_scores(table, "Hard", score=80, attempts=5, won=True)
+
+    assert table["Hard"]["best_score"] == 80
+    assert table["Hard"]["fewest_attempts"] == 2
+
+
+def test_a_loss_records_a_loss_and_sets_no_records():
+    # You cannot earn a personal best by running out of turns, even if the
+    # score you accumulated happens to be high.
+    table = update_high_scores({}, "Easy", score=999, attempts=1, won=False)
+
+    assert table["Easy"]["losses"] == 1
+    assert table["Easy"]["wins"] == 0
+    assert table["Easy"]["best_score"] is None
+    assert table["Easy"]["fewest_attempts"] is None
+
+
+def test_difficulties_keep_separate_records():
+    # A 20-number board and a 100-number board are not comparable, so one
+    # scoreboard shared across them would be meaningless.
+    table = update_high_scores({}, "Easy", score=80, attempts=2, won=True)
+    table = update_high_scores(table, "Hard", score=30, attempts=5, won=True)
+
+    assert table["Easy"]["best_score"] == 80
+    assert table["Hard"]["best_score"] == 30
+    assert "Normal" not in table
+
+
+def test_update_high_scores_does_not_mutate_the_table_it_was_given():
+    # Same rerun-safety rule as record_guess: the old table must survive
+    # untouched, including the nested per-difficulty dict.
+    original = update_high_scores({}, "Normal", score=70, attempts=3, won=True)
+    updated = update_high_scores(original, "Normal", score=95, attempts=1, won=True)
+
+    assert original["Normal"]["best_score"] == 70
+    assert updated["Normal"]["best_score"] == 95
+
+
+def test_blank_high_score_starts_empty():
+    assert blank_high_score() == {
+        "best_score": None,
+        "fewest_attempts": None,
+        "wins": 0,
+        "losses": 0,
+    }
+
+
+# --- new_game_state ---------------------------------------------------------
+
+def test_new_game_state_resets_every_field():
+    # Bug 3 was a partial reset: attempts went back to 0 but status stayed
+    # "won", so the st.stop() guard killed the Submit button forever. Listing
+    # the keys here means a future field cannot be quietly forgotten.
+    state = new_game_state(1, 100)
+
+    assert set(state) == {"secret", "attempts", "score", "status", "history"}
+    assert state["attempts"] == 0
+    assert state["score"] == 0
+    assert state["status"] == "playing"
+    assert state["history"] == []
+
+
+@pytest.mark.parametrize("low,high", [(1, 20), (1, 50), (1, 100)])
+def test_new_secret_respects_the_difficulty_bounds(low, high):
+    # The old New Game button called randint(1, 100) no matter the
+    # difficulty, so an Easy board (1-20) could hide an unreachable 87.
+    for _ in range(50):
+        secret = new_game_state(low, high)["secret"]
+        assert low <= secret <= high
+
+
+def test_new_game_state_uses_the_picker_it_is_given():
+    # Injecting the picker is what makes the secret testable at all.
+    state = new_game_state(1, 100, pick=lambda lo, hi: 42)
+    assert state["secret"] == 42
+
+
+def test_a_fresh_secret_is_always_reachable_by_a_valid_guess():
+    # The two halves of the fix have to agree: whatever new_game_state picks
+    # must be a value parse_guess will actually accept on that board.
+    for low, high in [(1, 20), (1, 50), (1, 100)]:
+        secret = new_game_state(low, high)["secret"]
+        ok, guess, err = parse_guess(str(secret), low, high)
+        assert ok is True
+        assert guess == secret
+
+
+# --- the feature end to end -------------------------------------------------
+
+def test_a_full_winning_game_lands_on_the_scoreboard():
+    # Play a real game against the pure helpers: binary-search by obeying the
+    # hints, log every guess, then fold the result into the high scores.
+    state = new_game_state(1, 100, pick=lambda lo, hi: 73)
+    high_scores = {}
+    low, high = 1, 100
+
+    while state["attempts"] < 8:
+        guess = (low + high) // 2
+        state["attempts"] += 1
+
+        outcome, message = check_guess(guess, state["secret"])
+        state["history"] = record_guess(
+            state["history"], state["attempts"], guess, outcome, message
+        )
+
+        if outcome == "Win":
+            state["status"] = "won"
+            break
+        if "HIGHER" in message:
+            low = guess + 1
+        else:
+            high = guess - 1
+
+    assert state["status"] == "won"
+    assert state["history"][-1]["outcome"] == "Win"
+    assert state["history"][-1]["guess"] == 73
+
+    # Every logged attempt number is consecutive, so the history and the
+    # counter can never disagree about how many turns were used.
+    assert [e["attempt"] for e in state["history"]] == list(
+        range(1, len(state["history"]) + 1)
+    )
+
+    high_scores = update_high_scores(
+        high_scores, "Normal", score=60, attempts=state["attempts"], won=True
+    )
+    assert high_scores["Normal"]["wins"] == 1
+    assert high_scores["Normal"]["fewest_attempts"] == state["attempts"]
+
+
+def test_rejected_guesses_appear_in_history_without_costing_a_turn():
+    # The player-facing promise of the free-attempt rule: three typos in a
+    # row leave the attempt counter untouched but all show up in the panel.
+    state = new_game_state(1, 100, pick=lambda lo, hi: 50)
+
+    for junk in ["abc", "0", "999"]:
+        ok, _, err = parse_guess(junk, 1, 100)
+        assert ok is False
+        state["history"] = record_guess(state["history"], None, junk, "Invalid", err)
+
+    assert state["attempts"] == 0
+    assert len(state["history"]) == 3
+    assert all("#·" in format_history_line(e) for e in state["history"])

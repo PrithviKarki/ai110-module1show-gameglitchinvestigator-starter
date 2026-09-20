@@ -55,15 +55,21 @@ $ python -m pytest tests/
 platform darwin -- Python 3.13.0, pytest-9.1.1, pluggy-1.6.0
 rootdir: /Users/prithvikarki/Documents/CS Projects/CP Game Glitch/ai110-module1show-gameglitchinvestigator-starter
 plugins: anyio-4.14.2
-collected 200 items
+collected 243 items
 
-tests/test_game_logic.py ............................................... [ 23%]
-........................................................................ [ 59%]
-........................................................................ [ 95%]
-.........                                                                [100%]
+tests/test_app_feature.py ................                               [  6%]
+tests/test_game_logic.py ............................................... [ 25%]
+........................................................................ [ 55%]
+........................................................................ [ 85%]
+....................................                                     [100%]
 
-============================= 200 passed in 0.40s ==============================
+============================= 243 passed in 1.56s ==============================
 ```
+
+`tests/test_game_logic.py` covers the pure logic. `tests/test_app_feature.py`
+drives the real `app.py` through Streamlit's own `AppTest` harness — clicking
+the actual buttons and reading the actual sidebar — so the Scoreboard & Guess
+History feature is proven working, not just asserted.
 
 ### Advanced edge-case coverage
 
@@ -87,4 +93,54 @@ had teeth I re-ran them against the old permissive parser: **9 failed**, and all
 
 ## 🚀 Stretch Features
 
-- [ ] [If you choose to complete Challenge 4, describe the Enhanced UI changes here — a screenshot is optional]
+### 🏆 Scoreboard & Guess History (built in Claude Code agent mode)
+
+Two new sidebar panels. Built by giving an agent the feature spec and a rule:
+put the real work in pure functions and flag anything it had to fix rather than
+fixing it silently. The agent transcript, the blockers it surfaced, and my four
+manual corrections are in `ai_interactions.md` under **Agent Workflow → Run 2**.
+
+**📜 Guess History** — every guess this game, newest first:
+
+```
+🎯 #3 — 66 → Win
+📈 #2 — 9 → Too Low
+📈 #1 — 9 → Too Low
+🚫 #· — 999 → Invalid
+🚫 #· — abc → Invalid
+```
+
+The `#·` marker means the input was rejected and cost no attempt, so a typo is
+visible in the log without silently burning a turn.
+
+**🏆 High Scores** — one row per difficulty, kept across every New Game:
+
+```
+Easy   — best 80 pts · fewest 2 tries · 3W / 1L
+Normal — best 50 pts · fewest 3 tries · 1W / 0L
+```
+
+Easy, Normal and Hard keep separate records, because a 20-number board and a
+100-number board are not comparable. A loss records a loss and sets no record —
+you cannot earn a personal best by running out of turns.
+
+**Four bugs the feature exposed**, all fixed:
+
+| Bug | Symptom | Fix |
+|-----|---------|-----|
+| Partial reset | `New Game` reset `attempts` and `secret` but left `status` on `"won"`, so the `st.stop()` guard killed Submit forever | One `new_game_state()` returns every field a fresh game needs |
+| Wrong range on reset | `New Game` called `randint(1, 100)` on every difficulty, so an Easy board could hide an unreachable 87 | `new_game_state(low, high)` takes the difficulty's real bounds |
+| Even-attempt hints | `app.py` stringified the secret on even turns, so guessing `9` against `66` said "Go LOWER" — `"9" > "66"` as text | Pass the secret through unchanged; `check_guess` keeps its fallback for the tests |
+| Counter off by one | `attempts` started at `1` and incremented *before* parsing, so a Normal game claimed 7 of 8 turns left before you touched it, and typos burned turns | Starts at `0`, increments only on a valid guess |
+
+The third one is the clearest argument for the feature: the history panel made
+it visible by showing two entries for the same guess pointing opposite ways.
+
+**Implementation note.** The panels render at the *bottom* of `app.py` on
+purpose. Streamlit runs the script top to bottom, so drawing them inline showed
+the state from before the click and the history lagged a turn behind.
+`st.sidebar` writes into the sidebar container wherever it is called, so moving
+the panels down fixes the lag with zero `st.rerun()` calls — and `st.empty()`
+placeholders do the same job for the "Attempts left" line and the debug panel.
+
+**Screenshot** *(optional)*: <!-- Insert a screenshot of the sidebar here -->
