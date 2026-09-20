@@ -23,6 +23,8 @@ Document at least 3 bugs you found. Add rows as needed.
 ## 2. How did you use AI as a teammate?
 
 - Which AI tools did you use on this project (for example: ChatGPT, Gemini, Copilot)?
+- Give one example of an AI suggestion that was correct (including what the AI suggested and how you verified the result).
+- Give one example of an AI suggestion you did not accept as written (including what the AI suggested, why you rejected or changed it, and how you verified your version). It does not have to be a suggestion that was wrong: over-engineered, out of scope, harder to read, or a poor fit for this codebase all count.
 
 I used Claude (through Claude Code in VS Code) as my main AI teammate. I pasted in `app.py` and my bug reproduction log and asked it to trace where each glitch actually came from, instead of just asking it to "fix the game." Treating it like a teammate meant I still had to check every claim it made against the code and the running app.
 
@@ -34,7 +36,19 @@ The AI pointed me to `check_guess()` in `app.py` and said the outcome labels wer
 
 The AI also explained why guessing `0` gave me a hint instead of an error: `parse_guess()` only checked for empty input and non-numeric input, and never compared the value against `low` and `high` at all, so out-of-bounds numbers were accepted as valid guesses and burned an attempt. It suggested passing `low` and `high` into `parse_guess()` and returning an error tuple when the value falls outside that range, and reminded me to update the call site in `app.py` since `low, high` were already being computed from the difficulty. This suggestion was also correct. I verified it by intentionally passing numbers beyond the range — `0`, `-5`, and `9999` — and confirming the game now shows a bounds error instead of a hint, and that the attempt counter in the Developer Debug Info did not increase on those rejected inputs. I backed that up with pytest cases covering values just inside and just outside both bounds.
 
-Everything the AI suggested on this project turned out to be correct, and both fixes worked once I applied them — I did not run into a suggestion that was incorrect or misleading. What made that work was that the AI always named the specific function and line range, so its claims were cheap for me to check rather than something I had to take on faith.
+**Suggestion 3 — the one I did not accept as written (rejected)**
+
+While building the Guess History sidebar, the panel was rendering the state from *before* the click — you had to guess twice before your first guess appeared. The AI correctly diagnosed why: Streamlit runs the script top to bottom, and the panel was drawn above the code that handles the guess. Its proposed fix was to call `st.rerun()` at the end of every submit branch so the script re-executes with the new state.
+
+I did not accept it. It would have worked for the history panel and broken something else: `st.rerun()` throws away everything already written to the page that run, including the `st.warning()` hint telling the player to go higher or lower. Trading the hint for the history is not a fix, it is a swap. When I pushed back, the AI's next idea was to stash the hint in session state and re-render it after the rerun, which is more moving parts to solve a problem I had just created.
+
+What I did instead was move the two sidebar panels to the *bottom* of `app.py`. `st.sidebar` writes into the sidebar container no matter where in the script it is called, so the panels can be defined last and still appear in the sidebar — they just read state that is now up to date. Zero reruns. I used the same trick with `st.empty()` placeholders for the "Attempts left" line and the debug expander, which had the identical lag.
+
+I verified my version two ways. `test_a_guess_shows_up_in_the_sidebar_on_the_same_click` in `tests/test_app_feature.py` submits one guess and asserts the sidebar already shows it on that same run — it fails against the original layout. Then I played the game by hand and confirmed the hint and the new history line now appear together on one click, which was the whole point.
+
+Two smaller ones I also turned down: the AI wanted to add a `setup.cfg` with `max-line-length = 88`, which would have silenced 16 of 21 flake8 violations without changing any code — I had it rewrap the lines properly instead, so the project passes on stock defaults. And it offered to replace the `(ok, guess, err)` return triple with a `NamedTuple`, which is genuinely nicer but would have touched about 40 tests for a readability gain the docstring already delivers. I noted it as a follow-up rather than doing it.
+
+The pattern across all three: the AI was never *wrong* about the diagnosis. It was wrong about the cost. It reached for the fix that was fastest to write rather than the one that was cheapest to live with, and that is the part I had to supply.
 
 ---
 
