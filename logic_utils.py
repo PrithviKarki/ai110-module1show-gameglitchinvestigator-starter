@@ -15,6 +15,7 @@ The module is organised in two halves:
 session state, and layout.
 """
 
+import math
 import random
 import re
 
@@ -374,4 +375,222 @@ def new_game_state(low, high, pick=random.randint):
         "score": 0,
         "status": "playing",
         "history": [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Enhanced UI formatting
+# ---------------------------------------------------------------------------
+
+#: Hot/Cold bands, ordered narrowest first. Each entry is
+#: ``(share_of_board, icon, label)``. The share is turned into an
+#: absolute distance by :func:`proximity`, so the bands mean roughly the
+#: same thing on a 1-20 board as on a 1-100 one.
+PROXIMITY_TIERS = (
+    (0.02, "🔥", "Scorching"),
+    (0.05, "🌶️", "Hot"),
+    (0.12, "☀️", "Warm"),
+    (0.25, "🌤️", "Lukewarm"),
+    (0.45, "❄️", "Cold"),
+)
+
+#: Streamlit colour name for each outcome, used by the colour-coded hint
+#: banner. Green reads as "done", orange as "keep going", red as "that
+#: input did not count".
+OUTCOME_COLORS = {
+    "Win": "green",
+    "Too High": "orange",
+    "Too Low": "orange",
+    "Invalid": "red",
+}
+
+
+def proximity(guess, secret, low, high):
+    """Describe how close a guess landed, as a Hot/Cold reading.
+
+    The direction hint ("go higher") tells the player which way to move;
+    this tells them how far. Together they turn a blind search into an
+    informed one without giving the answer away.
+
+    Args:
+        guess (int): The guess just made.
+        secret (int): The number being hunted.
+        low (int): Lowest legal guess on this board, inclusive.
+        high (int): Highest legal guess on this board, inclusive.
+
+    Returns:
+        tuple[str, str]: An ``(icon, label)`` pair such as
+        ``("🔥", "Scorching")``. An exact hit returns ``("🎯", "Exact")``.
+
+    Note:
+        Each band's share of the board is rounded **up** to a whole
+        number, and never below 1. Scaling alone is not enough: on Easy
+        (1-20) a 2% band is 0.38 wide, so "Scorching" would be
+        mathematically unreachable and a guess one step from winning
+        would read "Warm". Rounding up guarantees that being one away is
+        always the hottest reading on every board. The trade is that the
+        narrow bands collapse into each other on small boards — Easy has
+        no "Hot" — which is the right way round, since a 20-number board
+        has less distance to describe in the first place.
+
+    Example:
+        >>> proximity(50, 50, 1, 100)
+        ('🎯', 'Exact')
+        >>> proximity(51, 50, 1, 100)
+        ('🔥', 'Scorching')
+        >>> proximity(5, 95, 1, 100)
+        ('🧊', 'Freezing')
+        >>> proximity(11, 10, 1, 20)
+        ('🔥', 'Scorching')
+    """
+    if guess == secret:
+        return "🎯", "Exact"
+
+    span = max(high - low, 1)
+    distance = abs(guess - secret)
+
+    for share, icon, label in PROXIMITY_TIERS:
+        if distance <= max(1, math.ceil(share * span)):
+            return icon, label
+
+    return "🧊", "Freezing"
+
+
+def hint_color(outcome):
+    """Return the Streamlit colour name for an outcome.
+
+    Args:
+        outcome (str): An outcome from :func:`check_guess`, or
+            ``"Invalid"`` for input that was rejected.
+
+    Returns:
+        str: A colour usable in Streamlit's ``:color[text]`` markdown.
+        Unknown outcomes fall back to ``"gray"`` rather than raising, so a
+        new outcome type cannot break the banner.
+
+    Example:
+        >>> hint_color("Win")
+        'green'
+        >>> hint_color("Bamboozled")
+        'gray'
+    """
+    return OUTCOME_COLORS.get(outcome, "gray")
+
+
+def format_hint_banner(outcome, message, icon, label):
+    """Build the colour-coded hint line shown after a guess.
+
+    Args:
+        outcome (str): Outcome from :func:`check_guess`.
+        message (str): The direction hint already written for the player.
+        icon (str): Proximity icon from :func:`proximity`.
+        label (str): Proximity label from :func:`proximity`.
+
+    Returns:
+        str: Streamlit markdown, colour-coded by outcome, combining the
+        direction and the temperature — for example
+        ``":orange[**📉 Go LOWER!** · 🌶️ Hot]"``. A winning guess drops
+        the temperature, because "Exact" beside "Correct!" is noise, and
+        so does any call with no proximity reading to show.
+
+    Note:
+        Rejected input never reaches this function. An error has to be
+        visible even when the player has switched hints off, so ``app.py``
+        keeps those on ``st.error`` and clears the banner instead.
+
+    Example:
+        >>> format_hint_banner("Too High", "Go LOWER!", "🌶️", "Hot")
+        ':orange[**Go LOWER!** · 🌶️ Hot]'
+        >>> format_hint_banner("Win", "Correct!", "🎯", "Exact")
+        ':green[**Correct!**]'
+        >>> format_hint_banner("Too Low", "Go HIGHER!", "", "")
+        ':orange[**Go HIGHER!**]'
+    """
+    color = hint_color(outcome)
+
+    if outcome == "Win" or not label:
+        return f":{color}[**{message}**]"
+
+    return f":{color}[**{message}** · {icon} {label}]"
+
+
+def build_session_summary(history, secret, low, high):
+    """Turn the guess history into rows for the end-of-game table.
+
+    Args:
+        history (list[dict]): Entries built by :func:`record_guess`.
+        secret (int): The secret, now safe to reveal.
+        low (int): Lowest legal guess on this board, inclusive.
+        high (int): Highest legal guess on this board, inclusive.
+
+    Returns:
+        list[dict]: One row per entry, oldest first, with the keys
+        ``"#"``, ``"Guess"``, ``"Result"``, ``"Off by"`` and ``"Temp"``.
+        Rejected input keeps its place in the story but shows ``"·"`` for
+        the attempt number and ``"—"`` for the numeric columns, since
+        there is no distance to measure from text that never parsed.
+
+    Note:
+        Every cell is a string. A column holding both ``3`` and ``"·"``
+        fails Arrow serialisation when Streamlit renders the table, and
+        the automatic repair it falls back to is not something to rely
+        on. These rows are for display only — :func:`session_stats` is
+        where the numbers stay numbers.
+
+    Example:
+        >>> h = [{"attempt": 1, "guess": 40,
+        ...       "outcome": "Too Low", "message": "m"}]
+        >>> build_session_summary(h, 50, 1, 100)[0]["Off by"]
+        '10'
+    """
+    rows = []
+
+    for entry in history:
+        if entry["outcome"] == "Invalid":
+            off_by = "—"
+            temp = "—"
+        else:
+            off_by = str(abs(entry["guess"] - secret))
+            icon, label = proximity(entry["guess"], secret, low, high)
+            temp = f"{icon} {label}"
+
+        rows.append({
+            "#": "·" if entry["attempt"] is None else str(entry["attempt"]),
+            "Guess": str(entry["guess"]),
+            "Result": entry["outcome"],
+            "Off by": off_by,
+            "Temp": temp,
+        })
+
+    return rows
+
+
+def session_stats(history, secret):
+    """Summarise a finished game in the numbers worth showing.
+
+    Args:
+        history (list[dict]): Entries built by :func:`record_guess`.
+        secret (int): The secret, used to measure the closest near-miss.
+
+    Returns:
+        dict: ``turns`` counts the guesses that used a turn, ``rejected``
+        counts the inputs that did not, and ``closest`` is the smallest
+        distance from the secret among counted guesses — ``None`` when no
+        guess ever counted, because zero would read as a win.
+
+    Example:
+        >>> h = [{"attempt": 1, "guess": 40,
+        ...       "outcome": "Too Low", "message": "m"},
+        ...      {"attempt": None, "guess": "abc",
+        ...       "outcome": "Invalid", "message": "m"}]
+        >>> session_stats(h, 50)
+        {'turns': 1, 'rejected': 1, 'closest': 10}
+    """
+    counted = [e for e in history if e["outcome"] != "Invalid"]
+    distances = [abs(e["guess"] - secret) for e in counted]
+
+    return {
+        "turns": len(counted),
+        "rejected": len(history) - len(counted),
+        "closest": min(distances) if distances else None,
     }

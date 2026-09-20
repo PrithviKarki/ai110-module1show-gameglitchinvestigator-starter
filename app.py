@@ -12,12 +12,16 @@ Run it with:
 import streamlit as st
 
 from logic_utils import (
+    build_session_summary,
     check_guess,
+    format_hint_banner,
     format_history_line,
     get_range_for_difficulty,
     new_game_state,
     parse_guess,
+    proximity,
     record_guess,
+    session_stats,
     update_high_scores,
     update_score,
 )
@@ -59,6 +63,9 @@ if "high_scores" not in st.session_state:
 if "difficulty" not in st.session_state:
     st.session_state.difficulty = difficulty
 
+if "last_hint" not in st.session_state:
+    st.session_state.last_hint = ""
+
 if "secret" not in st.session_state:
     # FIX: one call site for the starting state, so "attempts" can no longer
     # start at 1 while the label claims you have all of them left.
@@ -69,6 +76,7 @@ if "secret" not in st.session_state:
 if st.session_state.difficulty != difficulty:
     st.session_state.difficulty = difficulty
     st.session_state.update(new_game_state(low, high))
+    st.session_state.last_hint = ""
 
 # --- main panel -------------------------------------------------------------
 
@@ -78,6 +86,10 @@ st.subheader("Make a guess")
 # script, after the guess has been processed. Written inline they showed the
 # attempt count from before the click - the counter was always one behind.
 status_slot = st.empty()
+metrics_slot = st.empty()
+progress_slot = st.empty()
+hint_slot = st.empty()
+summary_slot = st.empty()
 debug_slot = st.empty()
 
 raw_guess = st.text_input(
@@ -97,6 +109,7 @@ if new_game:
     # FIX (Bug 3): this used to reset only attempts and the secret, leaving
     # status stuck on "won"/"lost" so Submit stayed dead.
     st.session_state.update(new_game_state(low, high))
+    st.session_state.last_hint = ""
     st.rerun()
 
 # FIX: this used to be a bare st.stop(), which killed the rest of the script -
@@ -120,6 +133,11 @@ elif submit:
         st.session_state.history = record_guess(
             st.session_state.history, None, raw_guess, "Invalid", err
         )
+        # UI: a rejected guess must not leave the previous turn's hint on
+        # screen looking like a response to what was just typed. The error
+        # itself stays an st.error rather than joining the hint banner,
+        # because an error must show even with "Show hint" switched off.
+        st.session_state.last_hint = ""
         st.error(err)
     else:
         st.session_state.attempts += 1
@@ -139,8 +157,13 @@ elif submit:
             message,
         )
 
-        if show_hint:
-            st.warning(message)
+        # UI: the direction hint tells the player which way to move; the
+        # Hot/Cold reading tells them how far. Shown together, colour-coded
+        # by outcome, in place of the old uniformly-yellow st.warning.
+        icon, label = proximity(guess_int, st.session_state.secret, low, high)
+        st.session_state.last_hint = format_hint_banner(
+            outcome, message, icon, label
+        )
 
         st.session_state.score = update_score(
             current_score=st.session_state.score,
@@ -188,6 +211,54 @@ status_slot.info(
     f"Guess a number between {low} and {high}. "
     f"Attempts left: {attempts_left}"
 )
+
+# UI: three numbers the player used to have to dig out of the debug
+# expander, promoted to st.metric tiles across the top of the board.
+stats = session_stats(st.session_state.history, st.session_state.secret)
+
+with metrics_slot.container():
+    tile1, tile2, tile3 = st.columns(3)
+    tile1.metric("Score", st.session_state.score)
+    tile2.metric("Attempts", f"{st.session_state.attempts}/{attempt_limit}")
+    tile3.metric(
+        "Closest yet",
+        "—" if stats["closest"] is None else stats["closest"],
+        help="How far your best guess so far landed from the secret.",
+    )
+
+# UI: attempts left as a bar rather than a number, so the pressure of a
+# nearly-spent game is visible at a glance.
+progress_slot.progress(
+    min(st.session_state.attempts / attempt_limit, 1.0),
+    text=f"{attempts_left} of {attempt_limit} attempts remaining",
+)
+
+# UI: the colour-coded hint banner, replacing the old uniformly-yellow
+# st.warning. Rendered here so it survives to the bottom of the script.
+if show_hint and st.session_state.last_hint:
+    hint_slot.markdown(f"### {st.session_state.last_hint}")
+
+# UI: the end-of-game summary table. Only shown once the game is over,
+# because every row reveals the distance to the secret.
+if st.session_state.status != "playing" and st.session_state.history:
+    with summary_slot.container():
+        st.subheader("📊 Session Summary")
+
+        st.table(
+            build_session_summary(
+                st.session_state.history,
+                st.session_state.secret,
+                low,
+                high,
+            )
+        )
+
+        st.caption(
+            f"Secret: {st.session_state.secret} · "
+            f"{stats['turns']} attempts used · "
+            f"{stats['rejected']} rejected · "
+            f"closest miss: {stats['closest']}"
+        )
 
 with debug_slot.expander("Developer Debug Info"):
     st.write("Secret:", st.session_state.secret)

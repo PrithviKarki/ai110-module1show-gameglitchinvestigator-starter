@@ -254,3 +254,194 @@ def test_each_difficulty_keeps_its_own_record():
     assert app.session_state.high_scores["Easy"]["wins"] == 1
     assert app.session_state.high_scores["Hard"]["wins"] == 1
     assert "Normal" not in app.session_state.high_scores
+
+
+# --- enhanced UI ------------------------------------------------------------
+#
+# The formatting layer must improve what the player sees without changing
+# what the game does. These tests check both halves of that: the panels
+# appear and say the right thing, and the rules underneath are untouched.
+
+
+def banners(app):
+    """The colour-coded hint lines currently on the page."""
+    return [m.value for m in app.markdown if m.value.startswith("###")]
+
+
+def test_the_metric_tiles_track_the_game():
+    app = fresh_app()
+    app.session_state.secret = 50
+
+    labels = [m.label for m in app.metric]
+    assert labels == ["Score", "Attempts", "Closest yet"]
+    assert [m.value for m in app.metric] == ["0", "0/8", "—"]
+
+    submit(app, "40")
+    values = {m.label: m.value for m in app.metric}
+    assert values["Attempts"] == "1/8"
+    assert values["Closest yet"] == "10"
+
+
+def test_closest_yet_only_improves():
+    app = fresh_app()
+    app.session_state.secret = 50
+
+    submit(app, "45")
+    submit(app, "10")
+
+    closest = {m.label: m.value for m in app.metric}["Closest yet"]
+    assert closest == "5"
+
+
+def test_the_hint_is_colour_coded_and_carries_a_temperature():
+    app = fresh_app()
+    app.session_state.secret = 66
+
+    submit(app, "10")
+    banner = banners(app)[0]
+
+    assert ":orange[" in banner      # a miss, in the "keep going" colour
+    assert "Go HIGHER!" in banner    # the direction, unchanged
+    assert "Freezing" in banner      # and how far off it was
+
+
+def test_a_win_is_green_and_drops_the_temperature():
+    app = fresh_app()
+    app.session_state.secret = 50
+
+    submit(app, "50")
+    banner = banners(app)[0]
+
+    assert ":green[" in banner
+    assert "Correct!" in banner
+    assert "Exact" not in banner
+
+
+def test_rejected_input_clears_the_previous_hint():
+    # Otherwise the banner from the last real guess sits there looking
+    # like a response to the typo that was just submitted.
+    app = fresh_app()
+    app.session_state.secret = 50
+
+    submit(app, "40")
+    assert banners(app)
+
+    submit(app, "abc")
+    assert not banners(app)
+    assert app.error[0].value == "That is not a number."
+
+
+def test_errors_show_even_with_hints_switched_off():
+    # The hint is optional; being told your input was rejected is not.
+    app = fresh_app()
+    app.checkbox[0].set_value(False).run()
+
+    submit(app, "abc")
+    assert not banners(app)
+    assert app.error[0].value == "That is not a number."
+
+
+def test_switching_hints_off_hides_the_banner_but_not_the_game():
+    app = fresh_app()
+    app.session_state.secret = 50
+
+    app.checkbox[0].set_value(False).run()
+    submit(app, "40")
+
+    assert not banners(app)
+    # The guess still counted, was still logged, and still scored.
+    assert app.session_state.attempts == 1
+    assert app.session_state.history[-1]["outcome"] == "Too Low"
+
+
+def test_the_summary_table_appears_only_once_the_game_is_over():
+    # Every row reveals the distance to the secret, so showing it mid-game
+    # would hand the player the answer.
+    app = fresh_app()
+    app.session_state.secret = 50
+
+    submit(app, "40")
+    assert not app.get("table")
+
+    submit(app, "50")
+    assert len(app.get("table")) == 1
+
+
+def test_the_summary_table_replays_the_whole_session():
+    app = fresh_app()
+    app.session_state.secret = 50
+
+    submit(app, "abc")
+    submit(app, "10")
+    submit(app, "90")
+    submit(app, "50")
+
+    rows = app.get("table")[0].value
+    assert list(rows["Guess"]) == ["abc", "10", "90", "50"]
+    assert list(rows["Result"]) == ["Invalid", "Too Low", "Too High", "Win"]
+    assert list(rows["Off by"]) == ["—", "40", "40", "0"]
+
+
+def test_the_summary_caption_reports_the_secret_and_the_counts():
+    app = fresh_app()
+    app.session_state.secret = 50
+
+    submit(app, "abc")
+    submit(app, "50")
+
+    caption = [c.value for c in app.caption if "Secret:" in c.value][0]
+    assert "Secret: 50" in caption
+    assert "1 attempts used" in caption
+    assert "1 rejected" in caption
+
+
+def test_the_progress_bar_tracks_attempts():
+    app = fresh_app()
+    app.session_state.secret = 50
+
+    assert "8 of 8 attempts remaining" in app.get("progress")[0].proto.text
+
+    submit(app, "40")
+    assert "7 of 8 attempts remaining" in app.get("progress")[0].proto.text
+
+
+def test_a_rejected_guess_does_not_move_the_progress_bar():
+    app = fresh_app()
+    app.session_state.secret = 50
+
+    submit(app, "abc")
+    assert "8 of 8 attempts remaining" in app.get("progress")[0].proto.text
+
+
+def test_the_progress_bar_never_overflows():
+    # st.progress raises if the fraction leaves 0..1, so a game played to
+    # its last turn is the case that would catch an off-by-one.
+    app = fresh_app()
+    app.session_state.secret = 50
+
+    for _ in range(8):
+        submit(app, "10")
+
+    assert app.session_state.status == "lost"
+    assert not app.exception
+    assert "0 of 8 attempts remaining" in app.get("progress")[0].proto.text
+
+
+def test_the_formatting_layer_does_not_change_the_rules():
+    # The guard on this whole section: play a scripted game and assert the
+    # underlying state is exactly what it was before any of the UI work.
+    app = fresh_app()
+    app.session_state.secret = 73
+
+    submit(app, "abc")   # rejected, costs nothing
+    submit(app, "50")    # Too Low
+    submit(app, "90")    # Too High
+    submit(app, "73")    # Win
+
+    assert app.session_state.attempts == 3
+    assert app.session_state.status == "won"
+    assert [e["outcome"] for e in app.session_state.history] == [
+        "Invalid", "Too Low", "Too High", "Win"
+    ]
+    assert app.session_state.high_scores["Normal"]["wins"] == 1
+    assert app.session_state.high_scores["Normal"]["fewest_attempts"] == 3

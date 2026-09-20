@@ -65,22 +65,24 @@ empty block above is that result, not a truncated paste.
 ------------------------------------------------------------------------------
 
 $ python -m pytest tests/
-platform darwin -- Python 3.13.0, pytest-9.1.1, pluggy-1.6.0
 rootdir: /Users/prithvikarki/Documents/CS Projects/CP Game Glitch/ai110-module1show-gameglitchinvestigator-starter
 plugins: anyio-4.14.2
-collected 282 items
+collected 456 items
 
-tests/test_app_feature.py ................                               [  5%]
-tests/test_game_logic.py ............................................... [ 22%]
-........................................................................ [ 47%]
-........................................................................ [ 73%]
-........................................................................ [ 98%]
-...                                                                      [100%]
+tests/test_app_feature.py ..............................                 [  6%]
+tests/test_game_logic.py ............................................... [ 16%]
+........................................................................ [ 32%]
+........................................................................ [ 48%]
+........................................................................ [ 64%]
+........................................................................ [ 80%]
+........................................................................ [ 95%]
+...................                                                      [100%]
 
-============================= 282 passed in 1.46s ==============================
+============================= 456 passed in 2.55s ==============================
 
 Includes a Documentation style section that fails if any public function in
 logic_utils.py loses its docstring, its Args: section, its Returns: section,
 or if any >>> example in a docstring stops producing the output it claims.
+It is what caught the five UI-formatting helpers the moment they landed.
 
 ==============================================================================

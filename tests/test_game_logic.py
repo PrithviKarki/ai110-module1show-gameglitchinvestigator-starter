@@ -8,12 +8,17 @@ import pytest
 # it. app.py is pure UI and imports the same functions.
 from logic_utils import (
     blank_high_score,
+    build_session_summary,
     check_guess,
+    format_hint_banner,
     format_history_line,
     get_range_for_difficulty,
+    hint_color,
     new_game_state,
     parse_guess,
+    proximity,
     record_guess,
+    session_stats,
     update_high_scores,
 )
 
@@ -693,6 +698,305 @@ def test_rejected_guesses_appear_in_history_without_costing_a_turn():
 
 
 # ============================================================================
+# Enhanced UI formatting
+# ============================================================================
+#
+# The Hot/Cold reading, the colour-coded banner and the session summary are
+# presentation, but they are presentation computed from game state, so they
+# are testable like anything else. The rule these tests enforce is that the
+# UI may never contradict the logic underneath it.
+
+
+# --- proximity --------------------------------------------------------------
+
+def test_an_exact_guess_reads_as_a_bullseye():
+    assert proximity(50, 50, 1, 100) == ("🎯", "Exact")
+
+
+@pytest.mark.parametrize(
+    "guess,expected_label",
+    [
+        (50, "Exact"),
+        (51, "Scorching"),
+        (54, "Hot"),
+        (60, "Warm"),
+        (70, "Lukewarm"),
+        (90, "Cold"),
+        (100, "Freezing"),
+    ],
+)
+def test_temperature_cools_as_the_guess_moves_away(guess, expected_label):
+    _, label = proximity(guess, 50, 1, 100)
+    assert label == expected_label
+
+
+def test_temperature_is_symmetrical_around_the_secret():
+    # Being 20 below the secret is exactly as warm as being 20 above it.
+    # The direction hint carries the direction; this must not double up.
+    assert proximity(30, 50, 1, 100) == proximity(70, 50, 1, 100)
+
+
+def test_temperature_scales_with_the_size_of_the_board():
+    # This is the whole reason proximity takes low and high. The same
+    # absolute distance covers more of a small board, so it has to read
+    # cooler there: 3 away is "Warm" on Easy (1-20) but still "Hot" on
+    # Normal (1-100).
+    _, easy = proximity(13, 10, 1, 20)
+    _, normal = proximity(53, 50, 1, 100)
+
+    assert easy == "Warm"
+    assert normal == "Hot"
+
+
+@pytest.mark.parametrize(
+    "low,high,secret", [(1, 20, 10), (1, 50, 25), (1, 100, 50)]
+)
+def test_one_away_is_always_the_hottest_reading(low, high, secret):
+    # The bug this test was written for: with bands taken as a plain
+    # share of the board, Easy's 2% band is 0.38 wide, so "Scorching"
+    # could never be reached and a guess one step from the answer read
+    # "Warm". Rounding each band up to at least 1 fixes it everywhere.
+    _, below = proximity(secret - 1, secret, low, high)
+    _, above = proximity(secret + 1, secret, low, high)
+
+    assert below == "Scorching"
+    assert above == "Scorching"
+
+
+@pytest.mark.parametrize(
+    "low,high,secret", [(1, 20, 10), (1, 50, 25), (1, 100, 50)]
+)
+def test_the_far_corner_of_every_board_is_freezing(low, high, secret):
+    # The other end of the same guarantee: the worst guess available on
+    # a board must bottom out, not land mid-scale.
+    farthest = low if abs(low - secret) > abs(high - secret) else high
+    _, label = proximity(farthest, secret, low, high)
+
+    assert label == "Freezing"
+
+
+def test_temperature_never_crashes_on_a_degenerate_board():
+    # A one-number board would divide by zero without the max(span, 1).
+    icon, label = proximity(5, 5, 5, 5)
+    assert (icon, label) == ("🎯", "Exact")
+
+
+@pytest.mark.parametrize("guess", range(1, 101))
+def test_every_guess_on_the_board_gets_a_reading(guess):
+    icon, label = proximity(guess, 50, 1, 100)
+    assert icon and label
+    assert label in {
+        "Exact", "Scorching", "Hot", "Warm", "Lukewarm", "Cold", "Freezing"
+    }
+
+
+def test_closer_guesses_are_never_reported_as_colder():
+    # The invariant a player would notice instantly if it broke: walking
+    # toward the secret must never make the temperature drop.
+    tiers = ["Freezing", "Cold", "Lukewarm", "Warm", "Hot",
+             "Scorching", "Exact"]
+
+    previous = -1
+    for guess in range(1, 51):
+        _, label = proximity(guess, 50, 1, 100)
+        rank = tiers.index(label)
+        assert rank >= previous
+        previous = rank
+
+
+# --- hint_color and format_hint_banner --------------------------------------
+
+@pytest.mark.parametrize(
+    "outcome,color",
+    [
+        ("Win", "green"),
+        ("Too High", "orange"),
+        ("Too Low", "orange"),
+        ("Invalid", "red"),
+    ],
+)
+def test_each_outcome_has_its_own_colour(outcome, color):
+    assert hint_color(outcome) == color
+
+
+def test_an_unknown_outcome_gets_a_neutral_colour():
+    # A new outcome type must not raise KeyError inside the banner.
+    assert hint_color("Bamboozled") == "gray"
+
+
+def test_both_directions_share_a_colour():
+    # "Too High" and "Too Low" are the same kind of event - keep going -
+    # so colouring them differently would imply a distinction that is not
+    # there. The direction lives in the words, not the colour.
+    assert hint_color("Too High") == hint_color("Too Low")
+
+
+def test_the_banner_carries_direction_and_temperature():
+    banner = format_hint_banner("Too High", "📉 Go LOWER!", "🌶️", "Hot")
+
+    assert banner.startswith(":orange[")
+    assert "Go LOWER!" in banner
+    assert "Hot" in banner
+
+
+def test_a_win_drops_the_temperature():
+    # "Exact" next to "Correct!" is noise - the player can see they won.
+    banner = format_hint_banner("Win", "🎉 Correct!", "🎯", "Exact")
+
+    assert banner == ":green[**🎉 Correct!**]"
+    assert "Exact" not in banner
+
+
+def test_the_banner_omits_an_empty_temperature():
+    banner = format_hint_banner("Too Low", "📈 Go HIGHER!", "", "")
+
+    assert banner == ":orange[**📈 Go HIGHER!**]"
+    assert "·" not in banner
+
+
+def test_the_banner_never_contradicts_the_hint():
+    # The pairing rule, one level up from the original swapped-hint bug:
+    # whatever direction check_guess names, the banner must repeat it and
+    # must not smuggle in the opposite word.
+    for guess in range(1, 101):
+        if guess == 50:
+            continue
+
+        outcome, message = check_guess(guess, 50)
+        icon, label = proximity(guess, 50, 1, 100)
+        banner = format_hint_banner(outcome, message, icon, label)
+
+        expected = "LOWER" if outcome == "Too High" else "HIGHER"
+        forbidden = "HIGHER" if outcome == "Too High" else "LOWER"
+
+        assert expected in banner
+        assert forbidden not in banner
+
+
+# --- build_session_summary --------------------------------------------------
+
+def test_the_summary_has_one_row_per_guess_in_order():
+    history = []
+    for n, guess in enumerate([10, 90, 50], start=1):
+        outcome, message = check_guess(guess, 50)
+        history = record_guess(history, n, guess, outcome, message)
+
+    rows = build_session_summary(history, 50, 1, 100)
+
+    assert [row["Guess"] for row in rows] == ["10", "90", "50"]
+    assert [row["#"] for row in rows] == ["1", "2", "3"]
+
+
+def test_the_summary_measures_the_distance_to_the_secret():
+    history = record_guess([], 1, 40, "Too Low", "m")
+    row = build_session_summary(history, 50, 1, 100)[0]
+
+    assert row["Off by"] == "10"
+    assert row["Result"] == "Too Low"
+
+
+def test_distance_is_unsigned():
+    # "Off by 10" reads the same whether you were above or below; the
+    # Result column already says which side you were on.
+    above = build_session_summary(
+        record_guess([], 1, 60, "Too High", "m"), 50, 1, 100
+    )[0]
+    below = build_session_summary(
+        record_guess([], 1, 40, "Too Low", "m"), 50, 1, 100
+    )[0]
+
+    assert above["Off by"] == below["Off by"] == "10"
+
+
+def test_rejected_input_keeps_its_place_but_shows_no_numbers():
+    # "abc" has no distance from 50. Printing one, or dropping the row
+    # entirely, would both be lying about what happened in the game.
+    history = record_guess([], None, "abc", "Invalid", "m")
+    row = build_session_summary(history, 50, 1, 100)[0]
+
+    assert row["#"] == "·"
+    assert row["Guess"] == "abc"
+    assert row["Off by"] == "—"
+    assert row["Temp"] == "—"
+
+
+def test_the_summary_of_an_unplayed_game_is_empty():
+    assert build_session_summary([], 50, 1, 100) == []
+
+
+def test_every_cell_is_a_string():
+    # A column holding both 3 and "·" breaks Arrow serialisation when
+    # Streamlit renders the table. Uniform strings avoid relying on its
+    # automatic repair.
+    history = record_guess([], 1, 10, "Too Low", "m")
+    history = record_guess(history, None, "abc", "Invalid", "m")
+
+    rows = build_session_summary(history, 50, 1, 100)
+    assert all(
+        isinstance(cell, str) for row in rows for cell in row.values()
+    )
+
+
+def test_every_row_has_the_same_columns():
+    # st.table renders a ragged list badly, so the shape is part of the
+    # contract rather than an accident of how the rows were built.
+    history = record_guess([], 1, 10, "Too Low", "m")
+    history = record_guess(history, None, "abc", "Invalid", "m")
+    history = record_guess(history, 2, 50, "Win", "m")
+
+    rows = build_session_summary(history, 50, 1, 100)
+    columns = {"#", "Guess", "Result", "Off by", "Temp"}
+
+    assert all(set(row) == columns for row in rows)
+
+
+def test_the_winning_row_is_off_by_zero():
+    history = record_guess([], 1, 50, "Win", "m")
+    row = build_session_summary(history, 50, 1, 100)[0]
+
+    assert row["Off by"] == "0"
+    assert "Exact" in row["Temp"]
+
+
+# --- session_stats ----------------------------------------------------------
+
+def test_stats_count_turns_and_rejects_separately():
+    history = record_guess([], 1, 10, "Too Low", "m")
+    history = record_guess(history, None, "abc", "Invalid", "m")
+    history = record_guess(history, 2, 90, "Too High", "m")
+
+    stats = session_stats(history, 50)
+
+    assert stats["turns"] == 2
+    assert stats["rejected"] == 1
+
+
+def test_closest_tracks_the_best_near_miss():
+    history = record_guess([], 1, 10, "Too Low", "m")
+    history = record_guess(history, 2, 48, "Too Low", "m")
+    history = record_guess(history, 3, 90, "Too High", "m")
+
+    assert session_stats(history, 50)["closest"] == 2
+
+
+def test_closest_is_none_before_any_guess_counts():
+    # None rather than 0, because 0 would read as "you found it".
+    assert session_stats([], 50)["closest"] is None
+
+    only_junk = record_guess([], None, "abc", "Invalid", "m")
+    assert session_stats(only_junk, 50)["closest"] is None
+
+
+def test_rejected_input_cannot_set_the_closest_record():
+    # abs("abc" - 50) would raise; this pins that rejects are filtered
+    # out before any arithmetic touches them.
+    history = record_guess([], None, "abc", "Invalid", "m")
+    history = record_guess(history, 1, 30, "Too Low", "m")
+
+    assert session_stats(history, 50)["closest"] == 20
+
+
+# ============================================================================
 # Documentation style
 # ============================================================================
 #
@@ -718,8 +1022,10 @@ def public_functions():
 
 def test_there_are_functions_to_check():
     # Guards the tests below: if the import ever breaks, they would all
-    # pass vacuously on an empty list.
-    assert len(public_functions()) == 9
+    # pass vacuously on an empty list. The count is asserted on purpose -
+    # it is what made this section fail the moment the five UI helpers
+    # landed, instead of quietly not covering them.
+    assert len(public_functions()) == 14
 
 
 @pytest.mark.parametrize("name,func", public_functions())

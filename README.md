@@ -20,7 +20,7 @@ It wrote the code, ran away, and now the game is unplayable.
 
 | File | Role |
 |------|------|
-| `logic_utils.py` | All nine game-logic functions, each with a Google-style docstring and a runnable `>>>` example. No Streamlit, no global state — which is why the whole game is testable without a server. |
+| `logic_utils.py` | All 14 game-logic and formatting functions, each with a Google-style docstring and a runnable `>>>` example. No Streamlit, no global state — which is why the whole game is testable without a server. |
 | `app.py` | Streamlit only: widgets, session state, layout. Imports every rule from `logic_utils`. |
 | `tests/test_game_logic.py` | Unit tests for the logic, the edge cases, the feature helpers, and the docstrings themselves. |
 | `tests/test_app_feature.py` | End-to-end tests that drive the real `app.py` through Streamlit's `AppTest` harness. |
@@ -33,7 +33,7 @@ It wrote the code, ran away, and now the game is unplayable.
 3. **Fix the Logic.** The hints ("Higher/Lower") are wrong. Fix them.
 4. **Refactor & Test.** ✅ Done — all nine functions now live in
    `logic_utils.py` with full docstrings, `app.py` is pure UI, and the suite
-   is green at 282 tests.
+   is green at 456 tests.
 
 ## 📝 Document Your Experience
 
@@ -46,13 +46,16 @@ It wrote the code, ran away, and now the game is unplayable.
 Describe your fixed game in numbered steps so a reader can follow along without watching a video:
 
 1. User enters a guess of 0
-2. Game returns "Out of range. Guess a number between 1 and 100.
+2. Game returns "Out of range. Guess a number between 1 and 100." — the attempt
+   counter does not move and the progress bar stays put
 3. User enters a guess of 101
-4. Game returns "Out of range. Guess a number between 1 and 100.
-5. User enters a guess of 40 → "Go HIGHER!"
-6. User enters a guess of 70 → "Go LOWER!"
-7. User enters a guess of 68 → "Correct!"
-8. Game ends after the correct guess
+4. Game returns the same bounds error
+5. User enters a guess of 40 → :orange[**📈 Go HIGHER!** · 🌤️ Lukewarm], and the
+   "Closest yet" tile reads 28
+6. User enters a guess of 70 → :orange[**📉 Go LOWER!** · 🔥 Scorching]
+7. User enters a guess of 68 → :green[**🎉 Correct!**], balloons
+8. Game ends, the 📊 Session Summary table replays every guess with its distance
+   and temperature, and the win lands on the 🏆 High Scores panel
 
 **Screenshot** *(optional)*: <!-- Insert a screenshot of your fixed, winning game here -->
 
@@ -67,16 +70,18 @@ $ python -m pytest tests/
 platform darwin -- Python 3.13.0, pytest-9.1.1, pluggy-1.6.0
 rootdir: /Users/prithvikarki/Documents/CS Projects/CP Game Glitch/ai110-module1show-gameglitchinvestigator-starter
 plugins: anyio-4.14.2
-collected 282 items
+collected 456 items
 
-tests/test_app_feature.py ................                               [  5%]
-tests/test_game_logic.py ............................................... [ 22%]
-........................................................................ [ 47%]
-........................................................................ [ 73%]
-........................................................................ [ 98%]
-...                                                                      [100%]
+tests/test_app_feature.py ..............................                 [  6%]
+tests/test_game_logic.py ............................................... [ 16%]
+........................................................................ [ 32%]
+........................................................................ [ 48%]
+........................................................................ [ 64%]
+........................................................................ [ 80%]
+........................................................................ [ 95%]
+...................                                                      [100%]
 
-============================= 282 passed in 1.46s ==============================
+============================= 456 passed in 2.64s ==============================
 ```
 
 ### Style checks
@@ -118,6 +123,96 @@ had teeth I re-ran them against the old permissive parser: **9 failed**, and all
 `ai_interactions.md`.
 
 ## 🚀 Stretch Features
+
+### 🎨 Enhanced Game UI
+
+The original game gave the player one uniformly-yellow `st.warning` per turn
+and hid everything else behind the debug expander. Five additions, all built on
+pure functions in `logic_utils.py` so the formatting is testable and the rules
+underneath are untouched.
+
+**1. Hot/Cold temperature readings — `proximity()`**
+
+The direction hint tells you *which way* to move. It never told you *how far*,
+so every guess after the first was still a blind step. `proximity()` reports a
+band from 🔥 Scorching down to 🧊 Freezing:
+
+```
+📈 Go HIGHER! · 🧊 Freezing      guessed 10, secret 66
+📉 Go LOWER!  · 🌤️ Lukewarm      guessed 90, secret 66
+📈 Go HIGHER! · 🔥 Scorching     guessed 64, secret 66
+```
+
+The bands scale with the board, because being 3 away means something different
+on Easy (1–20) than on Normal (1–100). That scaling needed one non-obvious
+correction, which a test caught: taken as a plain share of the board, Easy's 2%
+band is **0.38 wide**, so 🔥 Scorching was mathematically unreachable and a
+guess one step from winning read "Warm". Each band is now rounded up to at
+least 1, so being one away is the hottest reading on every difficulty —
+`test_one_away_is_always_the_hottest_reading`.
+
+**2. Colour-coded hints — `hint_color()` and `format_hint_banner()`**
+
+Green for a win, orange for a miss, red for rejected input, rendered through
+Streamlit's `:color[text]` markdown. Both directions share orange on purpose:
+"Too High" and "Too Low" are the same kind of event — *keep going* — and the
+direction lives in the words, not the colour.
+
+Rejected input stays on `st.error` rather than joining the banner, because an
+error has to be visible even with **Show hint** switched off
+(`test_errors_show_even_with_hints_switched_off`).
+
+**3. Session summary table — `build_session_summary()` and `session_stats()`**
+
+At game over, the whole session replayed:
+
+```
+ #  Guess   Result    Off by  Temp
+ ·  abc     Invalid   —       —
+ 1  10      Too Low   56      🧊 Freezing
+ 2  90      Too High  24      🌤️ Lukewarm
+ 3  64      Too Low   2       🔥 Scorching
+ 4  66      Win       0       🎯 Exact
+
+Secret: 66 · 4 attempts used · 1 rejected · closest miss: 0
+```
+
+It appears **only once the game is over** — every row reveals the distance to
+the secret, so showing it mid-game would hand over the answer
+(`test_the_summary_table_appears_only_once_the_game_is_over`).
+
+**4. Metric tiles**
+
+`st.metric` row across the top for Score, Attempts (`3/8`) and Closest yet —
+three numbers previously buried in the debug expander.
+
+**5. Attempts progress bar**
+
+`st.progress` instead of a bare number, so a nearly-spent game looks like one.
+A rejected guess does not move it, matching the rule that typos cost nothing.
+
+#### Functions added or modified
+
+| Function | File | Role |
+|---|---|---|
+| `proximity()` | `logic_utils.py` | **New.** Distance → Hot/Cold band, scaled to the board |
+| `hint_color()` | `logic_utils.py` | **New.** Outcome → Streamlit colour name |
+| `format_hint_banner()` | `logic_utils.py` | **New.** Builds the colour-coded hint line |
+| `build_session_summary()` | `logic_utils.py` | **New.** History → table rows |
+| `session_stats()` | `logic_utils.py` | **New.** Turns used, rejects, closest miss |
+| `PROXIMITY_TIERS`, `OUTCOME_COLORS` | `logic_utils.py` | **New.** The bands and the palette |
+| submit handler | `app.py` | Replaces `st.warning(message)` with the banner; stores it in `st.session_state.last_hint` so it survives to the bottom of the script |
+| deferred render block | `app.py` | **New.** Metric tiles, progress bar, hint banner, summary table |
+
+#### Core logic is untouched
+
+`check_guess`, `parse_guess`, `update_score`, `new_game_state` and
+`update_high_scores` are unchanged — the enhancements read game state and
+render it, and never decide anything. `test_the_formatting_layer_does_not_change_the_rules`
+plays a scripted game and asserts attempts, history, status and high scores are
+exactly what they were before any of this was added.
+
+---
 
 ### 🏆 Scoreboard & Guess History (built in Claude Code agent mode)
 
