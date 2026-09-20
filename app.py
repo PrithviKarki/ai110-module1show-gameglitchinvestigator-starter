@@ -1,196 +1,34 @@
-import random
-import re
+"""Streamlit UI for the Glitchy Guesser.
+
+This module is deliberately thin: it owns widgets, session state and
+layout, and nothing else. Every rule of the game lives in `logic_utils`,
+where it can be tested without starting a Streamlit server.
+
+Run it with:
+
+    python -m streamlit run app.py
+"""
+
 import streamlit as st
 
-def get_range_for_difficulty(difficulty: str):
-    if difficulty == "Easy":
-        return 1, 20
-    if difficulty == "Normal":
-        return 1, 100
-    if difficulty == "Hard":
-        return 1, 50
-    return 1, 100
-
-# FIX (Bug 2): I pointed Claude Code at app.py in agent mode saying there was
-# no range validation at all; it found that get_range_for_difficulty already
-# computed low/high but they never reached this function, and added the bounds
-# check below. I reviewed the fix and asked for pytest cases covering it.
-#
-# EDGE CASES: the original `int(raw)` / `int(float(raw))` path was far more
-# permissive than it looks. Python accepts underscore separators ("1_0" -> 10)
-# and non-ASCII digits (Arabic-Indic "٥٠" -> 50), and the float branch silently
-# truncated "50.9" to 50 - scoring the player on a number they never typed.
-# This strict ASCII pattern is what closes all three.
-_NUMERIC_PATTERN = re.compile(r"[+-]?\d+(\.\d+)?", re.ASCII)
-
-
-def parse_guess(raw: str, low: int, high: int):
-    if raw is None:
-        return False, None, "Enter a guess."
-
-    if not isinstance(raw, str):
-        raw = str(raw)
-
-    raw = raw.strip()
-
-    if raw == "":
-        return False, None, "Enter a guess."
-
-    # FIX: added - replaces a bare try/except int() that accepted "1_0",
-    # full-width "１２" and other shapes no player ever means to type.
-    if not _NUMERIC_PATTERN.fullmatch(raw):
-        return False, None, "That is not a number."
-
-    if "." in raw:
-        as_float = float(raw)
-        # FIX: added - "50.9" used to truncate to 50 and get scored silently.
-        if as_float != int(as_float):
-            return False, None, "Whole numbers only. Drop the decimal."
-        value = int(as_float)
-    else:
-        value = int(raw)
-
-    # FIX: added - previously any int was accepted, so -500 and 9999 were
-    # treated as valid guesses, burned an attempt, and got scored.
-    if value < low or value > high:
-        return False, None, f"Out of range. Guess a number between {low} and {high}."
-
-    return True, value, None
-
-
-# FIX (Bug 1): I asked Claude Code in agent mode to analyze app.py for the
-# swapped direction hints; it traced the swap to all four return statements
-# below (both the int path and the TypeError fallback) and I reviewed the fix.
-def check_guess(guess, secret):
-    if guess == secret:
-        return "Win", "🎉 Correct!"
-
-    try:
-        if guess > secret:
-            return "Too High", "📉 Go LOWER!"   # FIX: was "Go HIGHER!"
-        else:
-            return "Too Low", "📈 Go HIGHER!"   # FIX: was "Go LOWER!"
-    except TypeError:
-        g = str(guess)
-        if g == secret:
-            return "Win", "🎉 Correct!"
-        # FIX: same swap lived in this fallback branch, which app.py reaches on
-        # even-numbered attempts; the AI caught it after I pointed out the first one.
-        if g > secret:
-            return "Too High", "📉 Go LOWER!"   # FIX: was "Go HIGHER!"
-        return "Too Low", "📈 Go HIGHER!"       # FIX: was "Go LOWER!"
-
-
-def update_score(current_score: int, outcome: str, attempt_number: int):
-    if outcome == "Win":
-        points = 100 - 10 * (attempt_number + 1)
-        if points < 10:
-            points = 10
-        return current_score + points
-
-    if outcome == "Too High":
-        if attempt_number % 2 == 0:
-            return current_score + 5
-        return current_score - 5
-
-    if outcome == "Too Low":
-        return current_score - 5
-
-    return current_score
-
-
-# ============================================================================
-# FEATURE: Scoreboard & Guess History (built in Claude Code agent mode)
-# ============================================================================
-#
-# These four helpers are deliberately pure - they take state in and return new
-# state out, touching neither st.session_state nor random. That is what lets
-# tests/test_game_logic.py cover the feature without running Streamlit.
-# See ai_interactions.md for the agent transcript and my manual corrections.
-
-OUTCOME_ICONS = {
-    "Win": "🎯",
-    "Too High": "📉",
-    "Too Low": "📈",
-    "Invalid": "🚫",
-}
-
-
-def record_guess(history, attempt_number, guess, outcome, message):
-    """Return a NEW history list with this guess appended.
-
-    attempt_number is None for rejected input, which does not burn a turn.
-    Returning a new list instead of mutating keeps Streamlit's rerun model
-    honest - the old list is never aliased into the next run.
-    """
-    entry = {
-        "attempt": attempt_number,
-        "guess": guess,
-        "outcome": outcome,
-        "message": message,
-    }
-    return list(history) + [entry]
-
-
-def format_history_line(entry):
-    """Render one history entry as a single readable line."""
-    icon = OUTCOME_ICONS.get(entry["outcome"], "❔")
-    label = "·" if entry["attempt"] is None else str(entry["attempt"])
-    return f"{icon} #{label} — {entry['guess']} → {entry['outcome']}"
-
-
-def blank_high_score():
-    """A difficulty that has never been finished."""
-    return {"best_score": None, "fewest_attempts": None, "wins": 0, "losses": 0}
-
-
-def update_high_scores(high_scores, difficulty, score, attempts, won):
-    """Fold one finished game into the high-score table and return a NEW table.
-
-    Best score is the HIGHEST score; fewest attempts is the LOWEST attempt
-    count - they move in opposite directions, which is the part I got wrong
-    by hand before the tests caught it. A loss records a loss and nothing else:
-    you cannot set a personal best by running out of turns.
-    """
-    table = {d: dict(row) for d, row in high_scores.items()}
-    row = table.get(difficulty) or blank_high_score()
-
-    if won:
-        row["wins"] += 1
-        if row["best_score"] is None or score > row["best_score"]:
-            row["best_score"] = score
-        if row["fewest_attempts"] is None or attempts < row["fewest_attempts"]:
-            row["fewest_attempts"] = attempts
-    else:
-        row["losses"] += 1
-
-    table[difficulty] = row
-    return table
-
-
-def new_game_state(low, high, pick=random.randint):
-    """Every field a fresh game needs, as one dict.
-
-    FIX (Bug 3): the old "New Game" button set attempts back to 0 but left
-    status as "won"/"lost", so the next click hit the st.stop() guard and the
-    Submit button did nothing - the bug in row 3 of my reproduction log. It
-    also called randint(1, 100) regardless of difficulty, so an Easy game
-    could hide a secret of 87 inside a 1-20 board. Resetting through one
-    function means no field can be forgotten again.
-    """
-    return {
-        "secret": pick(low, high),
-        "attempts": 0,
-        "score": 0,
-        "status": "playing",
-        "history": [],
-    }
-
+from logic_utils import (
+    check_guess,
+    format_history_line,
+    get_range_for_difficulty,
+    new_game_state,
+    parse_guess,
+    record_guess,
+    update_high_scores,
+    update_score,
+)
 
 st.set_page_config(page_title="Glitchy Guesser", page_icon="🎮")
 
 st.title("🎮 Game Glitch Investigator")
-st.caption("An AI-generated guessing game. Now with a scoreboard that tells the truth.")
+st.caption(
+    "An AI-generated guessing game. "
+    "Now with a scoreboard that tells the truth."
+)
 
 st.sidebar.header("Settings")
 
@@ -383,7 +221,8 @@ else:
             continue
 
         best = "—" if row["best_score"] is None else row["best_score"]
-        fewest = "—" if row["fewest_attempts"] is None else row["fewest_attempts"]
+        fewest = row["fewest_attempts"]
+        fewest = "—" if fewest is None else fewest
 
         st.sidebar.markdown(
             f"**{name}** — best {best} pts · "

@@ -1,3 +1,7 @@
 streamlit>=1.21.0
 altair<5
 pytest
+
+# Style checks. Run with: python -m flake8 app.py logic_utils.py tests/
+# See lint_report.txt for the committed output.
+flake8

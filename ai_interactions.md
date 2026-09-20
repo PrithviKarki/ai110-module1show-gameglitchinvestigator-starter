@@ -3,7 +3,7 @@
 > **Stretch features only.** Only fill in the sections that apply to stretch features you attempted. If you did not attempt a stretch feature, leave its section blank or delete it. This file is not required for the core project.
 >
 > Attempted: **SF8 (agent workflow, two runs — bug hunt and feature
-> expansion)** and **SF7 (test generation)**. The other
+> expansion)**, **SF7 (test generation)** and **SF9 (linting & style)**. The other
 > sections are left blank. Test output lives in `README.md`; the tests
 > themselves are in `tests/test_game_logic.py`.
 
@@ -142,7 +142,7 @@ Constraints:
 
 **Verification**
 
-All 243 tests pass. Beyond the suite I drove the app manually with the
+All tests pass (282 at the latest run). Beyond the suite I drove the app manually with the
 Developer Debug Info expander open: typed junk and watched the attempt counter
 hold at 0, won a Normal game and watched the row appear in the sidebar on that
 same click, hit New Game and confirmed Submit came back to life with the
@@ -228,21 +228,131 @@ fix honest rather than catching the original bug.
 
 > Document your use of AI for linting or code style improvements.
 
-**Prompt used:**
+This section covers two things done together: writing professional docstrings
+for `logic_utils.py`, and getting the whole project to pass `flake8` on stock
+settings. They belong together because the refactor that filled in
+`logic_utils.py` is what created most of the style work.
+
+### The refactor that came first
+
+`logic_utils.py` shipped as four `raise NotImplementedError` stubs, and the
+real logic had been sitting in `app.py` the whole time. Nothing could be
+documented until it moved. All nine functions now live in `logic_utils.py`;
+`app.py` imports them and owns only widgets, session state and layout.
+
+### Prompt 1 — docstrings
 
 ```
-<!-- Paste the prompt you gave the AI -->
+Write docstrings for every function in logic_utils.py. Google style: a
+one-line summary, then Args with types, then Returns describing the shape
+of what comes back, then a short >>> example.
+
+Two rules:
+- Where a function's behaviour looks odd, say WHY in a Note: section. The
+  odd parts are deliberate - they are fixes for bugs I found, and the next
+  reader will assume they are mistakes and "fix" them back.
+- Do not invent behaviour. If an example claims output, it has to be the
+  real output - I am going to run them as doctests.
 ```
 
-**Linting output before:**
+### Prompt 2 — linting
 
 ```
-<!-- Paste relevant linter warnings/errors -->
+Run flake8 on app.py, logic_utils.py and tests/ with default settings - no
+setup.cfg, no raised max-line-length. Show me the output, then fix every
+violation. Tell me separately about any naming you would change, because I
+want to decide those myself rather than have them applied silently.
 ```
 
-**Changes applied:**
+The "no raised max-line-length" clause was the important one. The AI's first
+instinct was to add a `setup.cfg` with `max-line-length = 88`, which would have
+made 16 of the 21 violations disappear without changing a line of code. That is
+a legitimate team convention, but it is not the same thing as passing PEP 8, so
+I asked it to do the actual rewrapping instead.
 
-<!-- Describe what you changed based on the AI's suggestions -->
+### Linting output
+
+**Before** — run against the code as it stood at commit `936b13b`:
+
+```
+$ python -m flake8 app.py logic_utils.py tests/
+app.py:5:1: E302 expected 2 blank lines, found 1
+app.py:24:1: E305 expected 2 blank lines after class or function definition, found 1
+app.py:56:80: E501 line too long (85 > 79 characters)
+app.py:78:80: E501 line too long (85 > 79 characters)
+app.py:144:80: E501 line too long (80 > 79 characters)
+app.py:193:80: E501 line too long (88 > 79 characters)
+app.py:386:80: E501 line too long (82 > 79 characters)
+logic_utils.py:3:80: E501 line too long (87 > 79 characters)
+logic_utils.py:12:80: E501 line too long (87 > 79 characters)
+logic_utils.py:21:80: E501 line too long (87 > 79 characters)
+logic_utils.py:26:80: E501 line too long (87 > 79 characters)
+tests/test_game_logic.py:18:1: E302 expected 2 blank lines, found 1
+tests/test_game_logic.py:25:1: E302 expected 2 blank lines, found 1
+tests/test_game_logic.py:30:1: E302 expected 2 blank lines, found 1
+tests/test_game_logic.py:36:80: E501 line too long (81 > 79 characters)
+tests/test_game_logic.py:39:80: E501 line too long (80 > 79 characters)
+tests/test_game_logic.py:40:80: E501 line too long (80 > 79 characters)
+tests/test_game_logic.py:323:80: E501 line too long (85 > 79 characters)
+tests/test_game_logic.py:433:80: E501 line too long (82 > 79 characters)
+tests/test_game_logic.py:569:80: E501 line too long (84 > 79 characters)
+tests/test_game_logic.py:675:80: E501 line too long (85 > 79 characters)
+
+21 violations: 16x E501, 4x E302, 1x E305
+```
+
+**After** — current tree:
+
+```
+$ python -m flake8 app.py logic_utils.py tests/
+$ echo $?
+0
+```
+
+Zero violations. flake8 prints nothing and exits `0` on a clean run, so the
+empty block above is the result rather than a truncated paste. The full
+before/after with tool versions and reproduction steps is committed as
+`lint_report.txt`.
+
+### Formatting changes — all applied
+
+| Change | Codes | Why |
+|--------|-------|-----|
+| Rewrapped 16 long lines to 79 columns | E501 | Real rewrapping, not a raised limit. Long `st.caption` strings became implicit string concatenation; long `parametrize` decorators and call arguments broke across lines. |
+| Two blank lines before top-level defs | E302, E305 | The three starter test functions were separated by one blank line. |
+| Module docstrings on `app.py` and `logic_utils.py` | — | Neither had one. `app.py`'s now states the split — UI only, rules live in `logic_utils` — since that is the thing a new reader most needs to know. |
+| Grouped and alphabetised imports | — | Stdlib, then third-party, then local, per PEP 8. The `from logic_utils import (...)` block is alphabetised so a future import lands in an obvious place. |
+
+### Naming changes — suggested, and what I decided
+
+| Suggestion | Applied? | Reasoning |
+|-----------|----------|-----------|
+| `_NUMERIC_PATTERN` → `NUMERIC_PATTERN` | **Yes** | The leading underscore marked it private to `app.py`. Once it moved into a shared module the underscore was actively misleading — it is part of what `logic_utils` offers. |
+| `g` → `text` in `check_guess`'s fallback | **Yes** | `g` saved five characters and cost a reader the knowledge that the value had been stringified, which is the entire point of that branch. |
+| `d, v` → `name, row` in the `update_high_scores` comprehension | **Yes** | `row` matches the word used everywhere else for a per-difficulty record, so the comprehension now reads the same way as the code around it. |
+| `parse_guess` → `parse_and_validate_guess` | **No** | Accurate but long, and the starter file named it `parse_guess`. Renaming a function the assignment specifies would make my work harder to grade, not easier to read. The docstring already says it validates. |
+| `ok, guess, err` → a `NamedTuple` | **No** | Genuinely nicer, and I would do it on a longer-lived project. Here it would touch every one of the ~40 tests that unpack that triple, for a readability gain the docstring already delivers. Noted as a follow-up rather than done. |
+| `OUTCOME_ICONS` → `ICONS` | **No** | Shorter but vaguer. In a module that also has a history panel and a scoreboard, "icons for what?" is a question the longer name answers. |
+
+### Verifying the docstrings instead of trusting them
+
+The docstrings are part of the deliverable, so `tests/test_game_logic.py` now
+has a **Documentation style** section that fails if any public function in
+`logic_utils.py` loses its docstring, its `Args:` entry for any parameter, or
+its `Returns:` section. A separate test runs every `>>>` example through
+`doctest`, so an example that stops matching its real output breaks the build.
+
+That last test earned its place immediately: the AI's first `record_guess`
+example claimed
+
+```
+[{'attempt': 1, 'guess': 42, 'outcome': 'Too Low', ...}]
+```
+
+which is not real output — it is an abbreviation. `pytest --doctest-modules`
+let it pass, because pytest enables the `ELLIPSIS` flag by default, but plain
+`python -m doctest logic_utils.py` failed on it. I rewrote the example to show
+output a reader can actually reproduce.
 
 ---
 

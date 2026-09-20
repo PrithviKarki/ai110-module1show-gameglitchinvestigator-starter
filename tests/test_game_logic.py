@@ -1,19 +1,22 @@
 import pytest
 
 # FIX: check_guess was imported from the logic_utils stub, so the first three
-# tests failed with NotImplementedError. The AI noticed this while adding the
-# Bug 1 tests and I had it point the import at app.py, where the real
-# implementations still live.
-from app import (
-    check_guess,
-    parse_guess,
-    get_range_for_difficulty,
-    record_guess,
-    format_history_line,
+# tests failed with NotImplementedError. For a while I pointed the import at
+# app.py, where the real implementations lived. The logic has since been
+# refactored into logic_utils.py where the starter file always meant it to go,
+# so this import is back where it started - only now there is something behind
+# it. app.py is pure UI and imports the same functions.
+from logic_utils import (
     blank_high_score,
-    update_high_scores,
+    check_guess,
+    format_history_line,
+    get_range_for_difficulty,
     new_game_state,
+    parse_guess,
+    record_guess,
+    update_high_scores,
 )
+
 
 def test_winning_guess():
     # If the secret is 50 and guess is 50, it should be a win
@@ -22,10 +25,12 @@ def test_winning_guess():
     outcome, _ = check_guess(50, 50)
     assert outcome == "Win"
 
+
 def test_guess_too_high():
     # If secret is 50 and guess is 60, hint should be "Too High"
     outcome, _ = check_guess(60, 50)
     assert outcome == "Too High"
+
 
 def test_guess_too_low():
     # If secret is 50 and guess is 40, hint should be "Too Low"
@@ -33,11 +38,11 @@ def test_guess_too_low():
     assert outcome == "Too Low"
 
 
-# --- Bug 1: check_guess returned the direction hint for the opposite outcome ---
+# --- Bug 1: check_guess paired each outcome with the opposite hint ---
 #
 # FIX: I asked Claude Code in agent mode to write tests targeting the swapped
-# labels. It drafted this section, then verified it by running the suite against
-# a copy of app.py with the swap restored - all of these failed, as they should.
+# labels. It drafted this section, then verified it by running the suite
+# against a copy with the swap restored - all of these failed, as they should.
 #
 # The outcome labels ("Too High" / "Too Low") were always correct; the message
 # paired with them was backwards, so a guess above the secret told the player
@@ -320,7 +325,9 @@ def test_non_whole_decimals_are_rejected_instead_of_truncated(raw):
     assert "Whole numbers" in err
 
 
-@pytest.mark.parametrize("raw,expected", [("50.0", 50), ("1.00", 1), ("100.0", 100)])
+@pytest.mark.parametrize(
+    "raw,expected", [("50.0", 50), ("1.00", 1), ("100.0", 100)]
+)
 def test_decimals_that_are_whole_numbers_still_count(raw, expected):
     # "50.0" IS fifty. Rejecting it would punish formatting, not the guess.
     ok, guess, err = parse_guess(raw, 1, 100)
@@ -430,7 +437,9 @@ def test_record_guess_does_not_mutate_the_list_it_was_given():
     # Streamlit re-runs the whole script on every click. If record_guess
     # mutated in place, a stale reference from the previous run could append
     # the same guess twice. Returning a new list makes that impossible.
-    original = [{"attempt": 1, "guess": 10, "outcome": "Too Low", "message": "x"}]
+    original = [
+        {"attempt": 1, "guess": 10, "outcome": "Too Low", "message": "x"}
+    ]
     updated = record_guess(original, 2, 20, "Too High", "y")
 
     assert len(original) == 1
@@ -566,7 +575,9 @@ def test_update_high_scores_does_not_mutate_the_table_it_was_given():
     # Same rerun-safety rule as record_guess: the old table must survive
     # untouched, including the nested per-difficulty dict.
     original = update_high_scores({}, "Normal", score=70, attempts=3, won=True)
-    updated = update_high_scores(original, "Normal", score=95, attempts=1, won=True)
+    updated = update_high_scores(
+        original, "Normal", score=95, attempts=1, won=True
+    )
 
     assert original["Normal"]["best_score"] == 70
     assert updated["Normal"]["best_score"] == 95
@@ -672,8 +683,83 @@ def test_rejected_guesses_appear_in_history_without_costing_a_turn():
     for junk in ["abc", "0", "999"]:
         ok, _, err = parse_guess(junk, 1, 100)
         assert ok is False
-        state["history"] = record_guess(state["history"], None, junk, "Invalid", err)
+        state["history"] = record_guess(
+            state["history"], None, junk, "Invalid", err
+        )
 
     assert state["attempts"] == 0
     assert len(state["history"]) == 3
     assert all("#·" in format_history_line(e) for e in state["history"])
+
+
+# ============================================================================
+# Documentation style
+# ============================================================================
+#
+# The docstrings in logic_utils.py are part of the deliverable, so they are
+# checked rather than trusted. These tests fail if a new function lands
+# without documentation, or if an existing docstring loses its Args/Returns
+# sections. See ai_interactions.md for the prompts used to write them.
+
+import doctest           # noqa: E402  (grouped with the checks that use it)
+import inspect           # noqa: E402
+import logic_utils       # noqa: E402
+
+
+def public_functions():
+    """Every public function defined in logic_utils itself."""
+    return [
+        (name, obj)
+        for name, obj in inspect.getmembers(logic_utils, inspect.isfunction)
+        if not name.startswith("_")
+        and obj.__module__ == "logic_utils"
+    ]
+
+
+def test_there_are_functions_to_check():
+    # Guards the tests below: if the import ever breaks, they would all
+    # pass vacuously on an empty list.
+    assert len(public_functions()) == 9
+
+
+@pytest.mark.parametrize("name,func", public_functions())
+def test_every_public_function_has_a_docstring(name, func):
+    assert func.__doc__ is not None, f"{name} has no docstring"
+    assert func.__doc__.strip(), f"{name} has an empty docstring"
+
+
+@pytest.mark.parametrize("name,func", public_functions())
+def test_docstrings_open_with_a_one_line_summary(name, func):
+    # PEP 257: the summary is a single line ending in a period.
+    summary = func.__doc__.strip().splitlines()[0]
+    assert summary.endswith("."), f"{name}: summary needs a period"
+    assert len(summary) <= 72, f"{name}: summary line is too long"
+
+
+@pytest.mark.parametrize("name,func", public_functions())
+def test_docstrings_document_their_arguments(name, func):
+    doc = func.__doc__
+    takes_args = bool(inspect.signature(func).parameters)
+
+    if takes_args:
+        assert "Args:" in doc, f"{name} takes arguments but has no Args:"
+        for param in inspect.signature(func).parameters:
+            assert param in doc, f"{name}: {param} is undocumented"
+
+
+@pytest.mark.parametrize("name,func", public_functions())
+def test_docstrings_document_what_comes_back(name, func):
+    assert "Returns:" in func.__doc__, f"{name} has no Returns: section"
+
+
+def test_the_module_itself_is_documented():
+    assert logic_utils.__doc__ is not None
+    assert "logic" in logic_utils.__doc__.lower()
+
+
+def test_docstring_examples_actually_run():
+    # Every >>> example in logic_utils is executed. A docstring that lies
+    # about its own output is worse than no docstring at all.
+    results = doctest.testmod(logic_utils, verbose=False)
+    assert results.failed == 0
+    assert results.attempted > 0

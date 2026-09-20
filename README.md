@@ -12,16 +12,28 @@ It wrote the code, ran away, and now the game is unplayable.
 ## 🛠️ Setup
 
 1. Install dependencies: `pip install -r requirements.txt`
-2. Run the broken app: `python -m streamlit run app.py`
+2. Run the app: `python -m streamlit run app.py`
+3. Run the tests: `python -m pytest tests/`
+4. Check style: `python -m flake8 app.py logic_utils.py tests/`
+
+## 📂 Project Structure
+
+| File | Role |
+|------|------|
+| `logic_utils.py` | All nine game-logic functions, each with a Google-style docstring and a runnable `>>>` example. No Streamlit, no global state — which is why the whole game is testable without a server. |
+| `app.py` | Streamlit only: widgets, session state, layout. Imports every rule from `logic_utils`. |
+| `tests/test_game_logic.py` | Unit tests for the logic, the edge cases, the feature helpers, and the docstrings themselves. |
+| `tests/test_app_feature.py` | End-to-end tests that drive the real `app.py` through Streamlit's `AppTest` harness. |
+| `lint_report.txt` | Committed flake8 before/after. |
 
 ## 🕵️‍♂️ Your Mission
 
 1. **Play the game.** Open the "Developer Debug Info" tab in the app to see the secret number. Try to win.
 2. **Find the State Bug.** Why does the secret number change every time you click "Submit"? Ask ChatGPT: *"How do I keep a variable from resetting in Streamlit when I click a button?"*
 3. **Fix the Logic.** The hints ("Higher/Lower") are wrong. Fix them.
-4. **Refactor & Test.** - Move the logic into `logic_utils.py`.
-   - Run `pytest` in your terminal.
-   - Keep fixing until all tests pass!
+4. **Refactor & Test.** ✅ Done — all nine functions now live in
+   `logic_utils.py` with full docstrings, `app.py` is pure UI, and the suite
+   is green at 282 tests.
 
 ## 📝 Document Your Experience
 
@@ -55,16 +67,30 @@ $ python -m pytest tests/
 platform darwin -- Python 3.13.0, pytest-9.1.1, pluggy-1.6.0
 rootdir: /Users/prithvikarki/Documents/CS Projects/CP Game Glitch/ai110-module1show-gameglitchinvestigator-starter
 plugins: anyio-4.14.2
-collected 243 items
+collected 282 items
 
-tests/test_app_feature.py ................                               [  6%]
-tests/test_game_logic.py ............................................... [ 25%]
-........................................................................ [ 55%]
-........................................................................ [ 85%]
-....................................                                     [100%]
+tests/test_app_feature.py ................                               [  5%]
+tests/test_game_logic.py ............................................... [ 22%]
+........................................................................ [ 47%]
+........................................................................ [ 73%]
+........................................................................ [ 98%]
+...                                                                      [100%]
 
-============================= 243 passed in 1.56s ==============================
+============================= 282 passed in 1.46s ==============================
 ```
+
+### Style checks
+
+```
+$ python -m flake8 app.py logic_utils.py tests/
+$ echo $?
+0
+```
+
+Zero violations on flake8's stock defaults — no `setup.cfg`, no raised
+`max-line-length`, no per-file ignores. flake8 prints nothing on a clean run,
+so the empty block above is the result. The full before/after (21 violations →
+0) with tool versions and reproduction steps is committed as `lint_report.txt`.
 
 `tests/test_game_logic.py` covers the pure logic. `tests/test_app_feature.py`
 drives the real `app.py` through Streamlit's own `AppTest` harness — clicking
